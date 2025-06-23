@@ -83,8 +83,8 @@ export const handle: Handle = async ({ event, resolve }) => {
                     logDebug('[!metadataExists] Connecting to relays');
                     try {
                         await withTimeout(
-                            ndk.connect(),
-                            1000,
+                            ndk.connect(3000),
+                            3000,
                             'Connection to nostr relays timed out'
                         );
 

@@ -21,6 +21,7 @@
   let hasMoreLists = false;
   let filterType: FilterType = FILTER_NONE;
   let dropdownOpen = false;
+  let searchTerm = '';
 
   // Filter options for the dropdown
   const filterOptions = [
@@ -235,6 +236,33 @@
     await loadAllFollowLists(true, filterType);
     loading = false;
   }
+
+  $: isSearchingNpub = isValidNpub(searchTerm);
+
+  $: filteredFollowLists = followLists.filter(list => {
+    const term = searchTerm.trim();
+    if (!term) return true;
+    if (isSearchingNpub) {
+      const hex = npubToHex(term);
+      if (hex && list.pubkey) {
+        return list.pubkey === hex;
+      }
+      return false;
+    }
+    return list.name?.toLowerCase().includes(term.toLowerCase());
+  });
+
+  $: if (
+    searchTerm.trim() &&
+    !loading &&
+    hasMoreLists &&
+    filteredFollowLists.length < LIST_LIMIT &&
+    followLists.length > 0 &&
+    !loadingMore
+  ) {
+    // Try to load more lists if searching and not enough results
+    loadMore();
+  }
 </script>
 
 <svelte:head>
@@ -301,7 +329,38 @@
         </div>
       </div>
     {/if}
-    
+    <div class="flex flex-col mb-6">
+      <input
+        type="text"
+        placeholder="Search packs by name..."
+        bind:value={searchTerm}
+        class="w-full px-4 py-3 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-300 text-gray-700"
+      />
+      {#if searchTerm.length > 0}
+        {#if isSearchingNpub}
+          {#if filteredFollowLists.length > 0}
+            <div class="flex items-center justify-center mt-2">
+              <span class="text-sm text-gray-500 mr-2">Showing {filteredFollowLists.length} packs from</span>
+              <ProfileImage
+                src={filteredFollowLists[0].authorPicture}
+                alt={filteredFollowLists[0].authorName || 'Author'}
+                size="xs"
+                classes="mr-1"
+              />
+              <span class="text-sm text-gray-500">
+                {filteredFollowLists[0].authorName || searchTerm.slice(0, 12) + '...'}
+              </span>
+            </div>
+          {:else}
+            <p class="text-sm text-gray-500 mt-2 text-center">
+              No packs found for {searchTerm.slice(0, 12) + '...'}
+            </p>
+          {/if}
+        {:else}
+          <p class="text-sm text-gray-500 mt-2 text-center">Showing {filteredFollowLists.length} of {followLists.length} packs</p>
+        {/if}
+      {/if}
+    </div>
     {#if loading}
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {#each Array(6) as _, i}
@@ -337,9 +396,9 @@
       </div>
     {:else}
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {#each followLists as list}
-          <a 
-            href="/d/{list.id}?p={list.pubkey}" 
+        {#each filteredFollowLists as list}
+          <a
+            href="/d/{list.id}?p={list.pubkey}"
             class="bg-white rounded-lg shadow-sm overflow-hidden transition-transform hover:scale-[1.02]"
           >
             <!-- Cover image -->

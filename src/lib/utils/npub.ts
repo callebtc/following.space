@@ -17,7 +17,7 @@ export function isValidNpub(input: string): boolean {
 /**
  * Convert npub to hex pubkey
  */
-export async function npubToHex(npub: string): Promise<string | null> {
+export function npubToHex(npub: string): string | null {
     // logDebug('Converting npub to hex:', npub);
     try {
         if (!isValidNpub(npub)) {

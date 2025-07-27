@@ -8,11 +8,14 @@ import {
     NDKSubscription,
     NDKUser
 } from '@nostr-dev-kit/ndk';
+import type { NDKSigner, NDKEncryptionScheme } from '@nostr-dev-kit/ndk';
 import { ndk } from '$lib/nostr/ndk';
 import { nip04, nip44 } from 'nostr-tools';
 import * as nostrTools from 'nostr-tools';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { FOLLOW_LIST_KIND } from '$lib/types/follow-list';
+import { Nip46Broker, makeSecret } from '@welshman/signer';
+import type { Nip46ResponseWithResult } from '@welshman/signer';
 
 // Login method types
 export enum LoginMethod {
@@ -75,6 +78,67 @@ if (browser) {
         } catch (error) {
             console.error('Error parsing login state:', error);
         }
+    }
+}
+
+/**
+ * Custom NDK signer adapter for Welshman broker
+ */
+class WelshmanNDKSigner implements NDKSigner {
+    private broker: Nip46Broker;
+    public pubkey: string;
+
+    constructor(broker: Nip46Broker, pubkey: string) {
+        this.broker = broker;
+        this.pubkey = pubkey;
+    }
+
+    async user(): Promise<NDKUser> {
+        return new NDKUser({ pubkey: this.pubkey });
+    }
+
+    get userSync(): NDKUser {
+        return new NDKUser({ pubkey: this.pubkey });
+    }
+
+    async blockUntilReady(): Promise<NDKUser> {
+        // Welshman broker is ready when constructed
+        return new NDKUser({ pubkey: this.pubkey });
+    }
+
+    async sign(event: NDKEvent): Promise<string> {
+        try {
+            const signedEvent = await this.broker.signEvent(event.rawEvent());
+            return signedEvent.sig;
+        } catch (error) {
+            console.error('Error signing event with Welshman broker:', error);
+            throw error;
+        }
+    }
+
+    async encrypt(recipient: NDKUser, value: string, scheme?: NDKEncryptionScheme): Promise<string> {
+        try {
+            return await this.broker.nip44Encrypt(recipient.pubkey, value);
+        } catch (error) {
+            console.error('Error encrypting with Welshman broker:', error);
+            throw error;
+        }
+    }
+
+    async decrypt(sender: NDKUser, value: string, scheme?: NDKEncryptionScheme): Promise<string> {
+        try {
+            return await this.broker.nip44Decrypt(sender.pubkey, value);
+        } catch (error) {
+            console.error('Error decrypting with Welshman broker:', error);
+            throw error;
+        }
+    }
+
+    toPayload(): any {
+        return {
+            type: 'welshman',
+            pubkey: this.pubkey
+        };
     }
 }
 
@@ -191,53 +255,109 @@ export async function loginWithBunker(bunkerUrl: string): Promise<boolean> {
     return true;
 }
 
-export async function createNostrConnectSigner(relay: string): Promise<NDKNip46Signer> {
+// Welshman-based signer instance for NostrConnect
+let welshmanSigner: any = null;
+let welshmanBroker: Nip46Broker | null = null;
 
-    const localPrivateKeyBytes = nostrTools.generateSecretKey();
-    const localPrivateKey = bytesToHex(localPrivateKeyBytes);
-    const perms = `sign_event:${FOLLOW_LIST_KIND},get_public_key`;
-    const ndkPrivateKeySigner = new NDKPrivateKeySigner(hexToBytes(localPrivateKey));
-    const signer = NDKNip46Signer.nostrconnect(ndk, relay, ndkPrivateKeySigner, {
-        name: "following.space",
-        perms: perms
+// Default relays for NostrConnect
+const SIGNER_RELAYS = [
+    'wss://relay.nsec.app/',
+    'wss://relay.primal.net',
+    'wss://nos.lol'
+];
+
+// NIP-46 permissions
+const NIP46_PERMS = `sign_event:${FOLLOW_LIST_KIND},get_public_key,nip44_encrypt,nip44_decrypt`;
+
+export interface NostrConnectResult {
+    broker: Nip46Broker;
+    url: string;
+    clientSecret: string;
+}
+
+export async function createNostrConnectConnection(): Promise<NostrConnectResult> {
+    const clientSecret = makeSecret();
+    const broker = new Nip46Broker({
+        clientSecret,
+        relays: SIGNER_RELAYS
     });
-    return signer;
+
+    const url = await broker.makeNostrconnectUrl({
+        perms: NIP46_PERMS,
+        name: 'following.space',
+        url: window.location.origin,
+        image: window.location.origin + '/favicon.png'
+    });
+
+    // Store broker for later use
+    welshmanBroker = broker;
+
+    return { broker, url, clientSecret };
 }
 
 /**
- * Login with NostrConnect
+ * Wait for NostrConnect approval and login
  */
-export async function loginWithNostrConnect(signer: NDKNip46Signer): Promise<boolean> {
+export async function waitForNostrConnect(broker: Nip46Broker, url: string, abortController: AbortController): Promise<boolean> {
     try {
-        await signer.blockUntilReady();
-        ndk.signer = signer;
-        logDebug('Set NostrConnect signer');
+        connectStatus.set({
+            status: 'waiting',
+            message: 'Waiting for connection approval...'
+        });
 
-        // ugly hack: get current serialized signer and use that as the signer payload
-        let signerPayload = '';
-        const currentLoginState = get(loginState);
-        if (currentLoginState.loggedIn && currentLoginState.data?.nostrconnect && currentLoginState.data.nostrconnect.signer) {
-            signerPayload = currentLoginState.data.nostrconnect.signer;
-        } else {
-            signerPayload = signer.toPayload();
+        logDebug('Waiting for NostrConnect approval...');
+        const response = await broker.waitForNostrconnect(url, abortController.signal);
+        logDebug('NostrConnect response:', response);
+
+        // Get the public key from the broker
+        const pubkey = await broker.getPublicKey();
+        logDebug('Got pubkey from broker:', pubkey);
+
+        if (pubkey) {
+            // Create custom NDK signer adapter
+            const welshmanNDKSigner = new WelshmanNDKSigner(broker, pubkey);
+            ndk.signer = welshmanNDKSigner;
+            logDebug('Set Welshman NDK signer');
+
+            // Store broker info for signing
+            welshmanBroker = broker;
+            welshmanSigner = { broker, pubkey };
+
+            // Store connection details for persistence
+            const newState: LoginState = {
+                method: LoginMethod.NOSTRCONNECT,
+                loggedIn: true,
+                data: {
+                    nostrconnect: {
+                        signer: JSON.stringify({
+                            pubkey,
+                            clientSecret: broker.params.clientSecret,
+                            signerPubkey: response.event.pubkey,
+                            relays: SIGNER_RELAYS
+                        })
+                    }
+                }
+            };
+
+            loginState.set(newState);
+            saveLoginState(newState);
+
+            connectStatus.set({
+                status: 'connected',
+                message: 'Successfully connected!'
+            });
+
+            return true;
         }
 
-        const newState: LoginState = {
-            method: LoginMethod.NOSTRCONNECT,
-            loggedIn: true,
-            data: {
-                nostrconnect: {
-                    signer: signerPayload
-                }
-            }
-        };
-        loginState.set(newState);
-        saveLoginState(newState);
-
-        return true;
+        throw new Error('Failed to get public key from broker');
     } catch (error) {
-        console.error('Error logging in with NostrConnect:', error);
-        return false;
+        logDebug('NostrConnect error:', error);
+        connectStatus.set({
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Connection failed'
+        });
+        throw error;
     }
 }
 
@@ -329,12 +449,35 @@ async function initializeSignerFromState(state: LoginState): Promise<boolean> {
                 }
                 break;
 
-            case LoginMethod.NOSTRCONNECT:
+                        case LoginMethod.NOSTRCONNECT:
                 if (state.data?.nostrconnect) {
                     const { signer } = state.data.nostrconnect;
                     if (signer) {
-                        const signerObject = await NDKNip46Signer.fromPayload(signer, ndk);
-                        return await loginWithNostrConnect(signerObject);
+                        // Restore welshman broker from saved state
+                        try {
+                            const signerData = JSON.parse(signer);
+                            const broker = new Nip46Broker({
+                                clientSecret: signerData.clientSecret,
+                                relays: signerData.relays || SIGNER_RELAYS
+                            });
+                            welshmanBroker = broker;
+                            welshmanSigner = { broker, pubkey: signerData.pubkey };
+
+                            // Create and set the Welshman NDK signer
+                            const welshmanNDKSigner = new WelshmanNDKSigner(broker, signerData.pubkey);
+                            ndk.signer = welshmanNDKSigner;
+                            logDebug('Restored Welshman NDK signer');
+
+                            connectStatus.set({
+                                status: 'connected',
+                                message: 'Restored connection'
+                            });
+
+                            return true;
+                        } catch (error) {
+                            console.error('Error restoring NostrConnect state:', error);
+                            return false;
+                        }
                     }
                 }
                 break;
@@ -376,4 +519,4 @@ export function logout(): void {
  */
 export function isLoggedIn(): boolean {
     return get(loginState).loggedIn;
-} 
+}

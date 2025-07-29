@@ -35,11 +35,11 @@
   let deleting = false;
   let loading = false;
   let showRemoveAllConfirm = false;
-  
+
   // Validation state
   let nameValid = true;
   let entriesValid = true;
-  
+
   onMount(async () => {
     // Check if we're in edit mode
     const editParam = $page.url.searchParams.get('edit');
@@ -56,16 +56,16 @@
       }
     }
   });
-  
+
   // Handle delete button click
   function handleDelete() {
     showDeleteConfirm = true;
   }
-  
+
   // Handle delete confirmation
   async function confirmDelete() {
     if (!listEventId) return;
-    
+
     deleting = true;
     try {
       const deleted = await deleteFollowList(listEventId);
@@ -85,12 +85,12 @@
       deleting = false;
     }
   }
-  
+
   // Cancel deletion
   function cancelDelete() {
     showDeleteConfirm = false;
   }
-  
+
   // Load an existing list for editing
   async function loadExistingList(id: string, pubkey?: string) {
     try {
@@ -100,14 +100,14 @@
         editMode = false;
         return;
       }
-      
+
       // // Check if the user is the author
       // if (!$user || $user.pubkey !== list.pubkey) {
       //   error = 'You are not authorized to edit this follow list';
       //   editMode = false;
       //   return;
       // }
-      
+
       // Load the list data into the form
       name = list.name;
       coverImageUrl = list.coverImageUrl;
@@ -124,7 +124,7 @@
         entry.bio = profile.bio;
         entry.nip05 = profile.nip05;
       });
-      
+
       logDebug('Loaded existing list for editing:', { id, name, entries: selectedEntries.length });
     } catch (err: any) {
       console.error('Error loading follow list for editing:', err);
@@ -132,17 +132,17 @@
       editMode = false;
     }
   }
-  
+
   // Handle user search
   async function handleSearch() {
     if (!searchQuery.trim()) return;
-    
+
     searching = true;
     searchResults = [];
     duplicateEntryError = false;
     noSearchResults = false; // Reset no results flag
     error = ''; // Clear previous errors
-    
+
     try {
       if (isValidNpub(searchQuery)) {
         // Convert npub to hex
@@ -152,10 +152,10 @@
           error = 'Invalid npub';
           return;
         }
-        
+
         // Get profile
         const profile = await getProfileByPubkey(pubkey);
-        
+
         if (selectedEntries.some(entry => entry.pubkey === pubkey)) {
           logDebug('Entry already in list:', pubkey);
           duplicateEntryError = true;
@@ -189,10 +189,10 @@
           error = 'Invalid npub';
           return;
         }
-        
+
         // Get profile
         const profile = await getProfileByPubkey(pubkey);
-        
+
         if (selectedEntries.some(entry => entry.pubkey === pubkey)) {
           logDebug('Entry already in list:', pubkey);
           duplicateEntryError = true;
@@ -214,12 +214,12 @@
       } else {
         // Search for users by name
         const results = await searchUsersByName(searchQuery);
-        
+
         // Filter out duplicates that are already in the selected entries
-        searchResults = results.filter(result => 
+        searchResults = results.filter(result =>
           !selectedEntries.some(entry => entry.pubkey === result.pubkey)
         );
-        
+
         if (results.length > 0 && searchResults.length === 0) {
           noSearchResults = true;
           setTimeout(() => {
@@ -227,7 +227,7 @@
           }, 3000);
         }
       }
-      
+
       logDebug(`Search returned ${searchResults.length} results`);
     } catch (err: any) {
       console.error('Error searching:', err);
@@ -236,7 +236,7 @@
       searching = false;
     }
   }
-  
+
   // Add a search result to the selected entries
   function addEntry(result: UserSearchResult) {
     // Check if already added
@@ -244,12 +244,12 @@
       logDebug('Entry already in list:', result.pubkey);
       return;
     }
-    
+
     logDebug('Adding entry to list:', result);
-    
+
     // Add to selections
     selectedEntries = [
-      ...selectedEntries, 
+      ...selectedEntries,
       {
         pubkey: result.pubkey,
         relay: result.relays[0] || '',
@@ -257,61 +257,61 @@
         picture: result.picture
       }
     ];
-    
+
     // Clear search
     searchQuery = '';
     searchResults = [];
   }
-  
+
   // Remove a selected entry
   function removeEntry(index: number) {
     selectedEntries = selectedEntries.filter((_, i) => i !== index);
   }
-  
+
   // Move entry up in the list
   function moveEntryUp(index: number) {
     if (index <= 0) return; // Can't move up if already at the top
-    
+
     const newEntries = [...selectedEntries];
     const temp = newEntries[index];
     newEntries[index] = newEntries[index - 1];
     newEntries[index - 1] = temp;
-    
+
     selectedEntries = newEntries;
   }
-  
+
   // Move entry down in the list
   function moveEntryDown(index: number) {
     if (index >= selectedEntries.length - 1) return; // Can't move down if already at the bottom
-    
+
     const newEntries = [...selectedEntries];
     const temp = newEntries[index];
     newEntries[index] = newEntries[index + 1];
     newEntries[index + 1] = temp;
-    
+
     selectedEntries = newEntries;
   }
-  
+
   // Handle form submission
   async function handleSubmit() {
     // Reset validation
     nameValid = !!name.trim();
     entriesValid = selectedEntries.length > 0;
-    
+
     logDebug('Form submission - validation:', { nameValid, entriesValid });
-    
+
     // Check validation
     if (!nameValid || !entriesValid) {
       error = 'Please fix the validation errors and try again.';
       logDebug('Validation failed:', error);
       return;
     }
-    
+
     submitting = true;
     error = '';
-    
+
     logDebug('Publishing follow list:', { name, description, entries: selectedEntries.length, editMode });
-    
+
     try {
       // Publish the follow list (same method for create and edit)
       const event = await publishFollowList(name, coverImageUrl, selectedEntries, editMode ? listId : undefined, description);
@@ -344,7 +344,7 @@
     selectedEntries = [];
     showRemoveAllConfirm = false;
   }
-  
+
   // Cancel remove all
   function cancelRemoveAll() {
     showRemoveAllConfirm = false;
@@ -368,7 +368,7 @@
       <h1 class="text-3xl font-bold text-gray-900">{editMode ? 'Edit' : 'Create'} Follow Pack</h1>
       <a href="/" class="btn btn-secondary">Cancel</a>
     </div>
-    
+
     {#if !$user}
       <div class="bg-yellow-50 border border-yellow-200 rounded-md p-6 text-center">
         <h2 class="text-xl font-medium text-yellow-800 mb-2">Login Required</h2>
@@ -387,7 +387,7 @@
           {error}
         </div>
       {/if}
-      
+
       <!-- Delete Confirmation Modal -->
       {#if showDeleteConfirm}
         <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -397,15 +397,15 @@
               Are you sure you want to delete the follow list "{name}"? This action cannot be undone.
             </p>
             <div class="flex justify-end space-x-3">
-              <button 
-                on:click={cancelDelete} 
+              <button
+                on:click={cancelDelete}
                 class="btn btn-secondary"
                 disabled={deleting}
               >
                 Cancel
               </button>
-              <button 
-                on:click={confirmDelete} 
+              <button
+                on:click={confirmDelete}
                 class="btn btn-error"
                 disabled={deleting}
               >
@@ -415,19 +415,14 @@
           </div>
         </div>
       {/if}
-      
-      <form 
-        on:submit|preventDefault={handleSubmit} 
-        on:keydown={(e) => {
-          if (e.key === 'Enter' && e.target instanceof HTMLElement && e.target.tagName !== 'TEXTAREA') {
-            e.preventDefault();
-          }
-        }}
-        class="bg-white shadow-sm rounded-lg overflow-hidden"
-      >
+
+                    <form
+          on:submit|preventDefault={handleSubmit}
+          class="bg-white shadow-sm rounded-lg overflow-hidden"
+        >
         <div class="p-6 border-b">
           <h2 class="text-xl font-medium mb-6">Follow Pack Details</h2>
-          
+
           <!-- Name field -->
           <div class="mb-4">
             <label for="name" class="block text-sm font-medium text-gray-700 mb-1">
@@ -445,7 +440,7 @@
               <p class="mt-1 text-sm text-red-600">Name is required</p>
             {/if}
           </div>
-          
+
           <!-- Cover image URL field -->
           <div class="mb-6">
             <label for="coverImageUrl" class="block text-sm font-medium text-gray-700 mb-1">
@@ -460,7 +455,7 @@
             />
             <p class="mt-1 text-xs text-gray-500">Optional: URL to an image that represents this list</p>
           </div>
-          
+
           <!-- Description field -->
           <div class="mb-6">
             <label for="description" class="block text-sm font-medium text-gray-700 mb-1">
@@ -473,27 +468,27 @@
               placeholder="Enter a description for this follow list"
             ></textarea>
           </div>
-          
+
           {#if coverImageUrl}
             <div class="mb-6">
               <p class="block text-sm font-medium text-gray-700 mb-2">Cover Image Preview</p>
               <div class="h-36 bg-gray-100 rounded-md overflow-hidden">
-                <img 
-                  src={coverImageUrl} 
-                  alt="Cover Preview" 
+                <img
+                  src={coverImageUrl}
+                  alt="Cover Preview"
                   class="w-full h-full object-cover"
                   on:error={(e) => {
                     (e.target as HTMLImageElement).src = 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y';
-                  }} 
+                  }}
                 />
               </div>
             </div>
           {/if}
         </div>
-        
+
         <div class="p-6 border-b">
           <h2 class="text-xl font-medium mb-6">Add Users to Follow Pack</h2>
-          
+
           <!-- Search field -->
           <div class="mb-4">
             <label for="search" class="block text-sm font-medium text-gray-700 mb-1">
@@ -530,12 +525,12 @@
                 Search by username or paste a nostr npub or nprofile
               {/if}
             </p>
-            
+
             {#if error}
               <p class="mt-2 text-sm text-red-600">{error}</p>
             {/if}
           </div>
-          
+
           <!-- Search results -->
           {#if searching}
             <div class="bg-white rounded-md shadow-sm mt-4 p-4 text-center">
@@ -550,10 +545,10 @@
                 {#each searchResults as result}
                   <li class="p-4 flex items-center justify-between">
                     <div class="flex items-center">
-                      <ProfileImage 
-                        src={result.picture} 
-                        alt={result.name || 'User'} 
-                        size="md" 
+                      <ProfileImage
+                        src={result.picture}
+                        alt={result.name || 'User'}
+                        size="md"
                         classes="mr-3"
                       />
                       <div>
@@ -587,7 +582,7 @@
               No users found matching "{searchQuery}"
             </div>
           {/if}
-          
+
           <!-- Selected entries -->
           <div>
             <div class="flex justify-between items-center mb-2">
@@ -607,7 +602,7 @@
                 <p class="text-sm text-red-600">Add at least one user to your list</p>
               {/if}
             </div>
-            
+
             <!-- Remove All Confirmation Modal -->
             {#if showRemoveAllConfirm}
               <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -617,14 +612,14 @@
                     Are you sure you want to remove all users from your list? This action cannot be undone.
                   </p>
                   <div class="flex justify-end space-x-3">
-                    <button 
-                      on:click={cancelRemoveAll} 
+                    <button
+                      on:click={cancelRemoveAll}
                       class="btn btn-secondary"
                     >
                       Cancel
                     </button>
-                    <button 
-                      on:click={confirmRemoveAll} 
+                    <button
+                      on:click={confirmRemoveAll}
                       class="btn btn-error"
                     >
                       Remove All
@@ -633,7 +628,7 @@
                 </div>
               </div>
             {/if}
-            
+
             {#if selectedEntries.length === 0}
               <div class="bg-gray-50 border border-gray-200 rounded-md p-4 text-center text-gray-500">
                 No users selected yet. Search for users to add them to your list.
@@ -643,10 +638,10 @@
                 {#each selectedEntries as entry, i}
                   <li class="p-3 flex items-center justify-between">
                     <div class="flex items-center">
-                      <ProfileImage 
-                        src={entry.picture} 
-                        alt={entry.name || 'User'} 
-                        size="md" 
+                      <ProfileImage
+                        src={entry.picture}
+                        alt={entry.name || 'User'}
+                        size="md"
                         classes="mr-3"
                       />
                       <div>
@@ -672,6 +667,7 @@
                           disabled={i === 0}
                           class="text-gray-500 hover:text-purple-600 disabled:opacity-30 disabled:hover:text-gray-500 focus:outline-none"
                           title="Move up"
+                          aria-label="Move entry up"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                             <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
@@ -683,6 +679,7 @@
                           disabled={i === selectedEntries.length - 1}
                           class="text-gray-500 hover:text-purple-600 disabled:opacity-30 disabled:hover:text-gray-500 focus:outline-none"
                           title="Move down"
+                          aria-label="Move entry down"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                             <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 011.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
@@ -703,7 +700,7 @@
             {/if}
           </div>
         </div>
-        
+
         <div class="p-6 flex justify-between">
           {#if editMode}
             <button
@@ -716,7 +713,7 @@
           {:else}
             <div></div>
           {/if}
-          
+
           <button
             type="submit"
             disabled={submitting}
@@ -725,7 +722,7 @@
             {submitting ? (editMode ? 'Updating...' : 'Publishing...') : (editMode ? 'Update' : 'Publish') + ' Follow Pack'}
           </button>
         </div>
-      </form>
+        </form>
     {/if}
   </div>
-</div> 
+</div>

@@ -25,6 +25,8 @@
 	"dependencies": {
 		"@nostr-dev-kit/ndk": "2.14.9",
 		"@sveltejs/adapter-node": "^5.2.12",
+		"@welshman/signer": "^0.4.1",
+		"@welshman/util": "^0.4.1",
 		"autoprefixer": "^10.4.16",
 		"canvas": "^3.1.0",
 		"node-canvas-with-twemoji-and-discord-emoji": "^1.2.2",

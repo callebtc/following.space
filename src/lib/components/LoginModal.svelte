@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { 
-    loginWithExtension, 
-    loginWithNsec, 
+  import {
+    loginWithExtension,
+    loginWithNsec,
     loginWithBunker,
-    loginWithNostrConnect,
+    waitForNostrConnect,
     checkNip07Extension,
-    createNostrConnectSigner,
+    createNostrConnectConnection,
     cancelNostrConnectAttempt,
     connectStatus
   } from '$lib/stores/login';
@@ -30,14 +30,15 @@
   let qrCodeDataUrl = '';
   let copySuccess = false;
   let showRelayInput = false;
-  
-  // Subscribe to connection status changes
-  $: connectionStatus = $connectStatus.status;
-  $: connectionMessage = $connectStatus.message || '';
-  
+  let nostrConnectAbortController = new AbortController();
+
+// Subscribe to connection status changes
+$: connectionStatus = $connectStatus.status;
+$: connectionMessage = $connectStatus.message || '';
+
   // Validate nsec
   $: isValidNsec = validateNsec(nsec);
-  
+
   function validateNsec(nsecString: string): boolean {
     // Basic validation: must start with nsec1 and be at least 6 chars
     return nsecString.trim().startsWith('nsec1') && nsecString.trim().length >= 6;
@@ -73,7 +74,7 @@
       console.error('Error generating QR code:', error);
     }
   }
-  
+
   async function pasteFromClipboard(target: 'nsec' | 'bunker') {
     try {
       const text = await navigator.clipboard.readText();
@@ -87,57 +88,51 @@
     }
   }
 
-  async function startNostrConnect() {
+async function startNostrConnect() {
     try {
-      isLoading = true;
-      
-      // Update connection status to waiting
-      connectStatus.set({
-        status: 'waiting',
-        message: 'Waiting for bunker to connect...',
-      });
-      
-      const signer = await createNostrConnectSigner(nostrConnectRelay);
-      if (!signer || !signer.nostrConnectUri) {
-        throw new Error('Failed to create NostrConnect signer');
-      }
-      
-      console.log('NostrConnect signer created', signer.nostrConnectUri);
-      nostrConnectUrl = signer.nostrConnectUri;
-      
-      // Set up a timeout for 2 minutes (120000ms)
-      const timeoutPromise = new Promise<boolean>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error('Connection timeout. Please try again.'));
-        }, 120000);
-      });
-      
-      // Create a login promise
-      const loginPromise = loginWithNostrConnect(signer);
-      
-      // Race the login against the timeout
-      const success = await Promise.race([loginPromise, timeoutPromise]);
-      
-      if (success) {
-        // If login successful, load user and close modal
-        await loadUser();
-        onLogin();
-        onClose();
-      } else {
-        throw new Error('Failed to login with NostrConnect');
-      }
+        isLoading = true;
+
+        // Create NostrConnect connection
+        const { broker, url, clientSecret } = await createNostrConnectConnection();
+        nostrConnectUrl = url;
+
+        // Generate QR code for the URL
+        await generateQrCode(url);
+
+        // Set up a timeout for approval
+        const approvalPromise = waitForNostrConnect(broker, url, nostrConnectAbortController);
+
+        // Race the approval process against a timeout
+        const success = await Promise.race([
+            approvalPromise,
+            new Promise<boolean>((_, reject) => setTimeout(() => reject('Connection timeout'), 120000))
+        ]);
+
+        if (success) {
+            // Successfully connected
+            await loadUser();
+            onLogin();
+            onClose();
+        }
     } catch (error) {
-      console.error('Error starting NostrConnect:', error);
-      
-      // Update connection status to error
-      connectStatus.set({
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Failed to connect'
-      });
-      
-      isLoading = false;
+        console.error('NostrConnect error:', error);
+        connectStatus.set({
+            status: 'error',
+            message: typeof error === 'string' ? error : 'Failed to connect'
+        });
+    } finally {
+        isLoading = false;
     }
-  }
+}
+
+function abortNostrConnect() {
+    cancelNostrConnectAttempt();
+    nostrConnectUrl = '';
+    qrCodeDataUrl = '';
+    nostrConnectAbortController.abort();
+    nostrConnectAbortController = new AbortController();
+    isLoading = false;
+}
 
   function cancelNostrConnect() {
     cancelNostrConnectAttempt();
@@ -181,7 +176,7 @@
   async function handleNsecLogin() {
     if (!nsec.trim()) return;
     isLoading = true;
-    
+
     try {
       const success = await loginWithNsec(nsec);
       if (success) {
@@ -200,14 +195,14 @@
     if (!bunkerUrl.trim() || !bunkerUrl.startsWith('bunker://')) return;
     isLoading = true;
     bunkerError = '';
-    
+
     try {
       const success = await loginWithBunker(bunkerUrl);
       if (success) {
         await loadUser();
         onLogin();
         onClose();
-      } 
+      }
     } catch (error) {
       console.error('Bunker login failed:', error);
       bunkerError = error instanceof Error ? error.message : `Bunker login failed: ${error}`;
@@ -227,11 +222,11 @@
     };
     reader.readAsText(file);
   }
-  
+
   function toggleManualBunkerInput() {
     showManualBunkerInput = !showManualBunkerInput;
   }
-  
+
   // Clean up when the modal is closed
   $: if (!isOpen) {
     cancelNostrConnect();
@@ -256,20 +251,20 @@
         <!-- Tab Navigation -->
         <div class="flex border-b border-gray-200 dark:border-gray-700 mb-6">
           {#if isNip07Available}
-          <button 
+          <button
             class="flex-1 py-2 font-medium text-sm {activeTab === 'extension' ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-500 dark:border-blue-500' : 'text-gray-500 dark:text-gray-400'}"
             on:click={() => activeTab = 'extension'}
           >
             Extension
           </button>
           {/if}
-          <button 
+          <button
             class="flex-1 py-2 font-medium text-sm {activeTab === 'nsec' ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-500 dark:border-blue-500' : 'text-gray-500 dark:text-gray-400'}"
             on:click={() => activeTab = 'nsec'}
           >
             Nsec
           </button>
-          <button 
+          <button
             class="flex-1 py-2 font-medium text-sm {activeTab === 'bunker' ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-500 dark:border-blue-500' : 'text-gray-500 dark:text-gray-400'}"
             on:click={() => activeTab = 'bunker'}
           >
@@ -312,9 +307,10 @@
                   class="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white pr-10"
                   placeholder="nsec1..."
                 />
-                <button 
+                <button
                   class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
                   on:click={() => pasteFromClipboard('nsec')}
+                  aria-label="Paste from clipboard"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
@@ -326,7 +322,7 @@
                 Warning: This a dangerous login method. Never enter your nsec in an untrusted application.
                 Use an alternative login method if possible.
               </div>
-              
+
               <button
                 class="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg dark:bg-blue-500 dark:hover:bg-blue-600 mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 on:click={handleNsecLogin}
@@ -346,7 +342,7 @@
                   <p class="text-sm text-gray-600 dark:text-gray-300 mb-4">
                     Connect securely with your Nostr bunker app
                   </p>
-                  
+
                   <button
                     class="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg dark:bg-blue-500 dark:hover:bg-blue-600 mb-3"
                     on:click={startNostrConnect}
@@ -354,9 +350,9 @@
                   >
                     {isLoading ? 'Generating...' : 'Connect with QR Code'}
                   </button>
-                  
+
                   <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">or</p>
-                  
+
                   <button
                     class="w-full py-2 px-4 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={toggleManualBunkerInput}
@@ -377,9 +373,10 @@
                       class="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white pr-10"
                       placeholder="bunker://"
                     />
-                    <button 
+                                        <button
                       class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
                       on:click={() => pasteFromClipboard('bunker')}
+                      aria-label="Paste from clipboard"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
@@ -404,7 +401,7 @@
                     >
                       {isLoading ? 'Connecting...' : 'Connect'}
                     </button>
-                    
+
                     <button
                       class="py-2 px-3 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 font-medium rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 flex-1"
                       on:click={toggleManualBunkerInput}
@@ -425,7 +422,7 @@
                     Connection error
                   {/if}
                 </h3>
-                
+
                 {#if connectionStatus === 'waiting'}
                   {#if qrCodeDataUrl}
                     <div class="flex justify-center">
@@ -433,11 +430,11 @@
                         <img loading="lazy" src={qrCodeDataUrl} alt="Nostr Connect QR Code" class="rounded-lg border border-gray-300 dark:border-gray-600"/>
                       </a>
                     </div>
-                    
+
                     <div class="text-xs text-gray-500 dark:text-gray-400 mb-2">
                       {connectionMessage}
                     </div>
-                    
+
                     {#if showRelayInput}
                       <div class="mt-2 mb-2 mx-4">
                         <div class="flex space-x-2">
@@ -479,7 +476,7 @@
                           Copy URL
                         {/if}
                       </button>
-                      
+
                       <button
                         class="py-1 px-3 text-xs border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
                         on:click={() => showRelayInput = !showRelayInput}
@@ -489,7 +486,7 @@
                         </svg>
                         Edit
                       </button>
-                      
+
                       <button
                         class="py-1 px-3 text-xs bg-red-600 hover:bg-red-700 text-white font-medium rounded-md dark:bg-red-500 dark:hover:bg-red-600 flex items-center"
                         on:click={cancelNostrConnect}
@@ -527,4 +524,4 @@
     </div>
   </div>
 </div>
-{/if} 
+{/if}

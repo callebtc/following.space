@@ -11,10 +11,10 @@ const logDebug = (...args: any[]) => {
 export const DEFAULT_RELAYS = [
     'wss://relay.damus.io',
     'wss://relay.nostr.band',
-    'wss://relay.8333.space',
-    "wss://nostr-pub.wellorder.net",
     "wss://nostr.oxtr.dev",
-    "wss://nos.lol"
+    "wss://nostr-pub.wellorder.net",
+    "wss://nos.lol",
+    "wss://relay.primal.net"
 ];
 
 // Create and configure the NDK instance

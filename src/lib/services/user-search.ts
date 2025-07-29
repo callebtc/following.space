@@ -2,6 +2,7 @@ import { ndk } from '$lib/nostr/ndk';
 import NDK, { NDKEvent, type NDKFilter } from '@nostr-dev-kit/ndk';
 import { getProfileByPubkey, loadUser, user } from '$lib/stores/user';
 import { get } from 'svelte/store';
+import { debounce } from 'lodash';
 
 const DEFAULT_SEARCH_RELAYS = [
     'wss://search.nos.today',
@@ -23,6 +24,7 @@ export interface UserSearchResult {
     rank: number;
     name?: string;
     picture?: string;
+    followerCount?: number;
 }
 
 /**
@@ -77,7 +79,7 @@ export async function searchUsersByName(searchQuery: string, limit: number = 5):
                     // Try to parse the content as JSON (kind 0 events have JSON content)
                     const content = JSON.parse(event.content);
                     name = content.name || content.displayName || 'Unknown';
-                    if (!name.toLowerCase().startsWith(searchQuery.toLowerCase())) {
+                    if (!name.toLowerCase().includes(searchQuery.toLowerCase())) {
                         continue;
                     }
                     picture = content.picture || '';
@@ -124,11 +126,95 @@ export async function searchUsersByName(searchQuery: string, limit: number = 5):
             results = results.slice(0, limit);
         }
 
+        // Fetch follower counts for top results only (for performance)
+        const topResults = results.slice(0, limit);
+        const followerPromises = topResults.map(async (result) => {
+            try {
+                result.followerCount = await getFollowerCount(result.pubkey, searchNdk);
+            } catch (e) {
+                logDebug(`Error fetching follower count for ${result.pubkey}: ${e}`);
+                result.followerCount = 0;
+            }
+            return result;
+        });
+
+        // Wait for all follower counts to be fetched
+        results = await Promise.all(followerPromises);
+
+        // Re-sort results by rank and then by follower count
+        results.sort((a, b) => {
+            if (b.rank !== a.rank) return b.rank - a.rank;
+            return (b.followerCount || 0) - (a.followerCount || 0);
+        });
+
         return results;
     } catch (err) {
         logDebug(`Error searching users: ${err}`);
         return [];
     }
+}
+
+/**
+ * Fetch the follower count for a given pubkey
+ * 
+ * @param pubkey The public key of the user
+ * @param searchNdk The NDK instance to use for fetching
+ * @returns Promise<number> The follower count
+ */
+async function getFollowerCount(pubkey: string, searchNdk: NDK): Promise<number> {
+    try {
+        const filter: NDKFilter = {
+            kinds: [3], // contacts/follows events
+            '#p': [pubkey],
+            limit: 500
+        };
+        
+        const events = await searchNdk.fetchEvents(filter, {
+            closeOnEose: true
+        });
+        
+        return events.size;
+    } catch (err) {
+        logDebug(`Error fetching follower count: ${err}`);
+        return 0;
+    }
+}
+
+// Exportiere eine debounced Version der Suchfunktion
+export const debouncedSearch = debounce(async (
+  query: string, 
+  callback: (results: UserSearchResult[]) => void
+) => {
+  if (query.length < 3) return;
+  const results = await searchUsersByName(query);
+  callback(results);
+}, 300);
+
+// Cache für Suchergebnisse
+const searchCache: Record<string, {results: UserSearchResult[], timestamp: number}> = {};
+const CACHE_DURATION = 5 * 60 * 1000; // 5 Minuten Cache-Dauer
+
+// Erweiterte Suchfunktion mit Cache
+export async function searchUsersByNameWithCache(searchQuery: string): Promise<UserSearchResult[]> {
+  // Check cache first
+  const cacheKey = searchQuery.toLowerCase().trim();
+  const now = Date.now();
+  
+  if (searchCache[cacheKey] && (now - searchCache[cacheKey].timestamp) < CACHE_DURATION) {
+    logDebug('Using cached results for:', cacheKey);
+    return searchCache[cacheKey].results;
+  }
+  
+  // If not in cache, perform search
+  const results = await searchUsersByName(searchQuery);
+  
+  // Save to cache
+  searchCache[cacheKey] = {
+    results,
+    timestamp: now
+  };
+  
+  return results;
 }
 
 

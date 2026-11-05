@@ -65,17 +65,13 @@ export function observePack(runtime: NostrRuntime, value: string, author?: strin
       next: (event) => runtime.eventStore.add(event), error: () => {}
     }));
     // Every routing change refreshes history too, including outboxes discovered late.
-    scope.add(targets$.pipe(switchMap((targets) => {
-      settled = false; warning = undefined;
-      return defer(() => runtime.hydrate([filter, deletes])).pipe(
-        catchError(() => of(undefined)),
-        switchMap(() => requestEvents$(runtime, [filter, deletes], targets)),
-        catchError((error) => {
-          warning = error instanceof Error ? error.message : 'Pack could not be refreshed';
-          return of([]);
-        })
-      );
-    })).subscribe(() => { settled = true; emit(); }));
+    // Once settled, stay settled: re-refreshes must not flash back to loading.
+    scope.add(targets$.pipe(switchMap((targets) => defer(() => runtime.hydrate([filter, deletes])).pipe(
+      catchError(() => of(undefined)),
+      switchMap(() => requestEvents$(runtime, [filter, deletes], targets)),
+      map(() => undefined),
+      catchError((error) => of(error instanceof Error ? error.message : 'Pack could not be refreshed'))
+    ))).subscribe((error) => { warning = error; settled = true; emit(); }));
     return () => scope.unsubscribe();
   }).pipe(shareReplay({ bufferSize: 1, refCount: true }));
 }

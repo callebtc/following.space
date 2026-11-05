@@ -13,9 +13,9 @@ export interface UserSearchState { results: UserSearchResult[]; loading: boolean
 export function observeUserSearch(query: string, limit = 5, source: 'ranking' | 'relay' = 'ranking') {
   query = query.trim();
   return defer(() => {
+    if (!query) return of<UserSearchState>({ results: [], loading: false });
     const controller = new AbortController();
     const pointer = /^[0-9a-f]{64}$/i.test(query) ? { pubkey: query } : decodeProfilePointer(query.replace(/^nostr:/, ''));
-    if (!query) return of<UserSearchState>({ results: [], loading: false });
     if (pointer) return of<UserSearchState>({ results: [{ pubkey: pointer.pubkey, relays: pointer.relays ?? [], rank: 0 }], loading: false });
     if (source === 'ranking') return defer(() => searchRankedPubkeys(query, limit, controller.signal)).pipe(
       map((results): UserSearchState => ({ results: results.map((result) => ({ ...result, relays: [] })), loading: false })),

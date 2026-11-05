@@ -42,6 +42,13 @@ it('waits for discovery before falling back to defaults', async () => {
   await vi.advanceTimersByTimeAsync(4001);
   expect(await pending).toEqual(DEFAULT_BLOSSOM_SERVERS);
 });
+it('falls back to a cached list, not defaults, when the cast stalls', async () => {
+  vi.useFakeTimers();
+  const { runtime } = setup(undefined, { kind: 10063, pubkey, created_at: 1, content: '', tags: [['server', 'https://cached.example/']] });
+  const pending = loadBlossomServers(runtime, pubkey);
+  await vi.advanceTimersByTimeAsync(4001);
+  expect(await pending).toEqual(['https://cached.example/']);
+});
 it('publishes a normalized BUD-03 replacement while preserving other tags', async () => {
   const { runtime } = setup([new URL('https://old.example')], { created_at: 9999999999, content: '', tags: [['server', 'https://old.example/'], ['custom', 'keep']] });
   const signer = vi.fn(async (draft) => ({ ...draft, pubkey, id: 'id', sig: 'sig' }));

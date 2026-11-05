@@ -1,5 +1,6 @@
 import { castUser } from 'applesauce-common/casts';
 import { kinds } from 'applesauce-core/helpers';
+import { getBlossomServersFromList } from 'applesauce-common/helpers';
 import { firstValueFrom, filter, timeout, map, concat, of } from 'rxjs';
 import type { NostrRuntime } from '../../nostr/runtime';
 import { publishSigned } from '../../nostr/publish';
@@ -17,8 +18,10 @@ export function observeResolvedBlossomServers(runtime: NostrRuntime, pubkey: str
     map((servers) => servers.map((server) => server.href))
   );
   return servers$.pipe(timeout({ first: 4000, with: () => {
-    if (runtime.eventStore.getReplaceable(kinds.BlossomServerList, pubkey)) throw new Error('Could not read your Blossom server list. Please retry.');
-    return concat(of([...DEFAULT_BLOSSOM_SERVERS]), servers$);
+    // The cast waits on outbox discovery; a cached list still beats defaults.
+    const cached = runtime.eventStore.getReplaceable(kinds.BlossomServerList, pubkey);
+    const fallback = cached ? getBlossomServersFromList(cached).map((server) => server.href) : [...DEFAULT_BLOSSOM_SERVERS];
+    return concat(of(fallback), servers$);
   } }));
 }
 

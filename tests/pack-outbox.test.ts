@@ -5,7 +5,7 @@ import { createNostrRuntime } from '../src/lib/nostr/runtime';
 import { loadPack, observePack } from '../src/lib/features/packs/detail';
 import { packHref, packNaddr, packRelayHints, resolvePackLink } from '../src/lib/nostr/protocol/pack-link';
 import { parseFollowListEvent } from '../src/lib/nostr/protocol/follow-pack';
-import { alice, signedPack } from './fixtures';
+import { alice, bob, signedPack } from './fixtures';
 
 const OUTBOX = 'wss://personal-outbox.example/';
 const stops: (() => void)[] = [];
@@ -64,6 +64,25 @@ describe('pack author outbox routing', () => {
     runtime.eventStore.add(mailboxes(2, 'wss://later.example/'));
     await vi.advanceTimersByTimeAsync(0);
     expect(request).toHaveBeenCalledTimes(count);
+  });
+
+  it('keeps author choices visible while a relay change refreshes an author-less link', async () => {
+    const { runtime, request } = setup(false);
+    const first = signedPack({ timestamp: 100 });
+    const second = signedPack({ timestamp: 100, key: bob });
+    request.mockImplementation(() => of());
+    const states: { loading: boolean; candidates: number }[] = [];
+    const sub = observePack(runtime, 'garden').subscribe((state) => states.push({ loading: state.loading, candidates: state.candidates.length }));
+    runtime.eventStore.add(first); runtime.eventStore.add(second);
+    await vi.waitFor(() => expect(states.at(-1)).toEqual({ loading: false, candidates: 2 }));
+    const settledAt = states.length;
+    request.mockImplementation(() => NEVER); // keep the second refresh in flight
+    runtime.setAppRelays(['wss://other-app.example']);
+    runtime.eventStore.add(signedPack({ timestamp: 101, title: 'Garden v2' }));
+    await Promise.resolve();
+    expect(states.length).toBeGreaterThan(settledAt);
+    expect(states.slice(settledAt)).not.toContainEqual(expect.objectContaining({ loading: true }));
+    sub.unsubscribe();
   });
 
   it.each([true, false])('loads an older pack only available at the author outbox (cached metadata: %s)', async (cached) => {

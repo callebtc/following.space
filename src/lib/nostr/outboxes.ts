@@ -3,7 +3,7 @@ import { kinds } from 'applesauce-core/helpers';
 import type { NostrRuntime } from './runtime';
 import { eventRelays } from './relay-policy';
 import { firstValueFrom, map, filter, distinctUntilChanged, timeout } from 'rxjs';
-import { requestEventsStrict } from './requests';
+import { requestEventsSettled } from './requests';
 
 /** Cast-driven discovery stays subscribed for late metadata and subsequent changes. */
 export function observeOutboxRelays(runtime: NostrRuntime, pubkey: string) {
@@ -18,12 +18,13 @@ export function observeOutboxRelays(runtime: NostrRuntime, pubkey: string) {
   );
 }
 
-/** Contact writes must distinguish absent metadata from a failed or unfinished lookup. */
-export async function discoverOutboxRelaysStrict(runtime: NostrRuntime, pubkey: string) {
+/** Best-effort outbox discovery for contact writes: tolerates dead relays, but reports
+ * whether every discovery relay answered so callers can tell absence from an unfinished lookup. */
+export async function discoverOutboxRelaysSettled(runtime: NostrRuntime, pubkey: string) {
   const lookup = await firstValueFrom(runtime.relayPolicy.lookupRelays$.pipe(timeout({ first: 6000 })));
   const cached = runtime.eventStore.getReplaceable(kinds.RelayList, pubkey);
-  await requestEventsStrict(runtime, { kinds: [kinds.RelayList], authors: [pubkey] }, [
+  const read = await requestEventsSettled(runtime, { kinds: [kinds.RelayList], authors: [pubkey] }, [
     ...lookup, ...runtime.relayPolicy.readRelays, ...eventRelays(cached, 'write')
   ]);
-  return eventRelays(runtime.eventStore.getReplaceable(kinds.RelayList, pubkey), 'write');
+  return { outboxes: eventRelays(runtime.eventStore.getReplaceable(kinds.RelayList, pubkey), 'write'), complete: !read.failed.length };
 }

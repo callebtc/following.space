@@ -1,6 +1,6 @@
 import type { Filter, NostrEvent } from 'applesauce-core/helpers';
 import type { NostrRuntime } from './runtime';
-import { filter, firstValueFrom, forkJoin, take, tap, throwIfEmpty, timeout as bound, defer, toArray, race, fromEvent, mergeMap, throwError } from 'rxjs';
+import { filter, firstValueFrom, forkJoin, take, tap, timeout as bound, defer, toArray, race, fromEvent, mergeMap, throwError, map, of, defaultIfEmpty, catchError } from 'rxjs';
 import { normalizeRelays } from './relay-policy';
 
 /** Best-effort finite read: group completion can include failed or unfinished relays. */
@@ -23,25 +23,28 @@ export function requestEvents$(runtime: NostrRuntime, filters: Filter | Filter[]
   });
 }
 
-/** For read-modify-write: every intended relay must explicitly reach EOSE.
- * Pool.request hides partial failures and can finish on idle before all relays answer.
- * Use individual subscriptions instead, with an absolute EOSE deadline (events do not reset it).
+export interface SettledRead { events: NostrEvent[]; answered: string[]; failed: string[] }
+
+/** For read-modify-write: query every relay individually and report which ones reached EOSE.
+ * Offline, erroring or silent relays are normal on Nostr, so they are reported, never thrown;
+ * callers decide whether the relays that answered are enough.
+ * Pool.request hides partial failures, so use individual subscriptions with an absolute
+ * EOSE deadline (events do not reset it).
  */
-export async function requestEventsStrict(runtime: NostrRuntime, filters: Filter | Filter[], relays = runtime.relays, timeout = 6000): Promise<NostrEvent[]> {
+export async function requestEventsSettled(runtime: NostrRuntime, filters: Filter | Filter[], relays = runtime.relays, timeout = 6000): Promise<SettledRead> {
   const targets = normalizeRelays(relays);
   const healthy = new Set(runtime.pool.filterRelays(targets));
-  if (!targets.length || targets.some((url) => !healthy.has(url))) {
-    throw new Error('Contact refresh requires all relays to be available. Please retry.');
-  }
   const events: NostrEvent[] = [];
-  await firstValueFrom(forkJoin(targets.map((url) => runtime.pool.relay(url).subscription(filters, { waitForAuth: false }).pipe(
+  const results = targets.length ? await firstValueFrom(forkJoin(targets.map((url) => !healthy.has(url) ? of(false) : runtime.pool.relay(url).subscription(filters, { waitForAuth: false }).pipe(
     tap((message) => {
       if (message !== 'EOSE') { runtime.eventStore.add(message); events.push(message); }
     }),
     filter((message) => message === 'EOSE'),
     take(1),
     bound({ first: timeout }),
-    throwIfEmpty(() => new Error(`Relay ${url} closed before EOSE; please retry.`))
-  ))));
-  return events;
+    map(() => true),
+    defaultIfEmpty(false),
+    catchError(() => of(false))
+  )))) : [];
+  return { events, answered: targets.filter((_, i) => results[i]), failed: targets.filter((_, i) => !results[i]) };
 }

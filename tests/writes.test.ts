@@ -70,7 +70,7 @@ describe('contact transactions', () => {
   it('does not replace unknown contacts after a failed refresh', async () => {
     const { runtime, account, publish, network } = setup();
     network.mockReturnValue(throwError(() => new Error('offline')));
-    await expect(updateContacts(runtime, account, { add: ['a'.repeat(64)] }, () => true, () => {})).rejects.toThrow('offline');
+    await expect(updateContacts(runtime, account, { add: ['a'.repeat(64)] }, () => true, () => {})).rejects.toThrow('could not be found');
     expect(publish).not.toHaveBeenCalled();
   });
   it('serializes concurrent updates so the second builds on the first', async () => {

@@ -53,7 +53,7 @@ function delayed(messages: Message[], delay: number) {
   });
 }
 
-describe('strict contact discovery', () => {
+describe('best-effort contact discovery', () => {
   it('waits for metadata arriving at 2200ms and preserves follows found only on the personal outbox', async () => {
     vi.useFakeTimers();
     const previous = contacts();
@@ -102,45 +102,54 @@ describe('strict contact discovery', () => {
     expect(ctx.publish.mock.calls[0][0]).toContain(personal);
   });
 
-  it.each([10002, 3])('aborts on partial relay failure reading kind %s and preserves the cached previous list', async (failedKind) => {
+  it.each([10002, 3])('tolerates a dead relay reading kind %s when an existing list is found', async (failedKind) => {
     const previous = contacts();
     const ctx = setup((url, kind) => {
       if (kind === failedKind && url === app) return throwError(() => new Error('offline'));
+      if (kind === 3 && url === personal) return of(previous, 'EOSE' as const);
       return kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const);
     });
-    ctx.runtime.eventStore.add(previous);
-    await expect(ctx.write()).rejects.toThrow('offline');
-    expect(ctx.sign).not.toHaveBeenCalled();
-    expect(ctx.publish).not.toHaveBeenCalled();
-    expect(ctx.snapshot).not.toHaveBeenCalled();
-    expect(ctx.runtime.eventStore.getReplaceable(3, ctx.account.pubkey)?.id).toBe(previous.id);
+    const event = await ctx.write();
+    expect(event.tags).toContainEqual(previous.tags[0]);
+    expect(event.tags).toContainEqual(['p', added]);
+    expect(ctx.publish).toHaveBeenCalledTimes(1);
   });
 
-  it.each([10002, 3])('does not interpret a silent relay as absence for kind %s', async (silentKind) => {
+  it('follows when the personal outbox is dead but the list is on an app relay', async () => {
+    vi.useFakeTimers();
+    const previous = contacts();
+    const ctx = setup((url, kind) => {
+      if (url === personal) return NEVER;
+      if (kind === 3) return of(previous, 'EOSE' as const);
+      return kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const);
+    });
+    const result = ctx.write();
+    await vi.advanceTimersByTimeAsync(6001);
+    const event = await result;
+    expect(event.tags).toContainEqual(previous.tags[0]);
+    expect(ctx.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([10002, 3])('does not start a new list when a relay failed reading kind %s and none was found', async (failedKind) => {
+    const ctx = setup((url, kind) => {
+      if (kind === failedKind && url === (failedKind === 10002 ? lookup : personal)) return throwError(() => new Error('offline'));
+      return kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const);
+    });
+    await expect(ctx.write()).rejects.toThrow('could not be found');
+    expect(ctx.sign).not.toHaveBeenCalled();
+    expect(ctx.publish).not.toHaveBeenCalled();
+  });
+
+  it.each(['silent', 'closed before EOSE', 'unhealthy'])('treats a %s relay as unanswered, not as absence', async (mode) => {
     vi.useFakeTimers();
     const ctx = setup((url, kind) => {
-      if (kind === silentKind && url === lookup && kind === 10002) return NEVER;
-      if (kind === silentKind && url === personal && kind === 3) return concat(of(contacts()), NEVER);
+      if (url === lookup && mode !== 'unhealthy') return mode === 'silent' ? NEVER : EMPTY;
       return kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const);
     });
-    const result = expect(ctx.write()).rejects.toThrow('Timeout');
+    if (mode === 'unhealthy') vi.spyOn(ctx.runtime.pool, 'filterRelays').mockImplementation((urls) => urls.filter((url) => url !== lookup));
+    const result = expect(ctx.write()).rejects.toThrow('could not be found');
     await vi.advanceTimersByTimeAsync(6001);
     await result;
-    expect(ctx.sign).not.toHaveBeenCalled();
-    expect(ctx.publish).not.toHaveBeenCalled();
-  });
-
-  it('requires EOSE, not just stream completion', async () => {
-    const ctx = setup(() => EMPTY);
-    await expect(ctx.write()).rejects.toThrow('before EOSE');
-    expect(ctx.sign).not.toHaveBeenCalled();
-    expect(ctx.publish).not.toHaveBeenCalled();
-  });
-
-  it('does not silently skip an unhealthy discovery relay', async () => {
-    const ctx = setup();
-    vi.spyOn(ctx.runtime.pool, 'filterRelays').mockImplementation((urls) => urls.filter((url) => url !== lookup));
-    await expect(ctx.write()).rejects.toThrow('all relays');
     expect(ctx.sign).not.toHaveBeenCalled();
     expect(ctx.publish).not.toHaveBeenCalled();
   });

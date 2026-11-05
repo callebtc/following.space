@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { user } from '$lib/stores/user';
   import { logout } from '$lib/stores/login';
   import { initializingAuth } from '$lib/services/auth';
@@ -28,7 +27,7 @@
 
   function handleLogout() {
     logout();
-    user.set(null);
+
   }
 </script>
 
@@ -47,14 +46,14 @@
   {:else if isLoggedIn}
     <button 
       on:click={handleLogout}
-      class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg dark:bg-red-500 dark:hover:bg-red-600"
+      class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg"
     >
       Log out
     </button>
   {:else}
     <button 
       on:click={openLoginModal}
-      class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg dark:bg-purple-500 dark:hover:bg-purple-600"
+      class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg"
     >
       Log in
     </button>

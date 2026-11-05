@@ -1,379 +1,164 @@
-import { writable, get } from 'svelte/store';
+import { BaseAccount } from 'applesauce-accounts';
 import { browser } from '$app/environment';
-import {
-    NDKNip07Signer,
-    NDKPrivateKeySigner,
-    NDKNip46Signer,
-    NDKEvent,
-    NDKSubscription,
-    NDKUser
-} from '@nostr-dev-kit/ndk';
-import { ndk } from '$lib/nostr/ndk';
-import { nip04, nip44 } from 'nostr-tools';
-import * as nostrTools from 'nostr-tools';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { FOLLOW_LIST_KIND } from '$lib/types/follow-list';
+import { writable } from 'svelte/store';
+import { ExtensionAccount, NostrConnectAccount, PrivateKeyAccount } from 'applesauce-accounts/accounts';
+import { ExtensionSigner, NostrConnectSigner } from 'applesauce-signers';
+import type { IAccount } from 'applesauce-accounts';
+import { accounts } from '../nostr/accounts';
+import { normalizeRelays, SIGNER_RELAYS } from '../nostr/relay-policy';
+import { kinds } from 'applesauce-core/helpers';
+import { FOLLOW_LIST_KIND, LOOKUP_RELAY_LIST_KIND } from '../nostr/protocol/kinds';
+import { APP_NAME } from '../constants';
 
-// Login method types
-export enum LoginMethod {
-    EXTENSION = 'extension',
-    NSEC = 'nsec',
-    BUNKER = 'bunker',
-    NOSTRCONNECT = 'nostrconnect',
-    NONE = 'none'
+export const authNotice = writable('');
+export const connectStatus = writable<{ status: 'idle' | 'waiting' | 'connected' | 'error'; message?: string }>({ status: 'idle' });
+const LOCAL = 'following:v2:accounts';
+const SESSION = 'following:v2:remote-accounts';
+const ACTIVE = 'following:v2:active';
+const LEGACY = 'nostr-follow-list:login';
+// Contacts, deletions, account server/lookup lists, Blossom upload auth, and packs.
+const permissions = NostrConnectSigner.buildSigningPermissions([
+  kinds.Contacts, kinds.EventDeletion, kinds.BlossomServerList,
+  LOOKUP_RELAY_LIST_KIND, kinds.BlobsAuth, FOLLOW_LIST_KIND
+]);
+let initialized: Promise<boolean> | undefined;
+let generation = 0;
+let pending: { signer: NostrConnectSigner; controller: AbortController } | undefined;
+
+function save() {
+  try {
+    // Raw private keys stay in memory. Remote client credentials last only for this browser tab.
+    localStorage.setItem(LOCAL, JSON.stringify(accounts.toJSON(true).filter((a) => a.type === 'extension')));
+    sessionStorage.setItem(SESSION, JSON.stringify(accounts.toJSON(true).filter((a) => a.type === 'nostr-connect')));
+    if (accounts.active) localStorage.setItem(ACTIVE, accounts.active.id);
+    else localStorage.removeItem(ACTIVE);
+  } catch { /* Login still works without browser storage. */ }
 }
-
-// NIP-46 Request kind (24133)
-const NIP46_REQUEST_KIND = 24133;
-
-export interface LoginState {
-    method: LoginMethod;
-    loggedIn: boolean;
-    data?: {
-        nsec?: string;
-        bunkerUrl?: string;
-        nostrconnect?: {
-            signer?: string;
-        };
-    };
+function activate(account: IAccount, token: number) {
+  if (!/^[0-9a-f]{64}$/i.test(account.pubkey)) throw new Error('Signer returned an invalid public key');
+  if (token !== generation) throw new Error('Login cancelled');
+  for (const old of accounts.accounts) {
+    accounts.removeAccount(old.id);
+    if (old instanceof BaseAccount) old.abortQueue(new Error('Account changed'));
+    if (old.signer instanceof NostrConnectSigner) void old.signer.close();
+  }
+  accounts.addAccount(account);
+  accounts.setActive(account);
+  try { localStorage.removeItem(LEGACY); } catch { /* Optional storage. */ }
+  authNotice.set('');
+  save();
 }
-
-// Local storage key
-const LOGIN_STATE_KEY = 'nostr-follow-list:login';
-
-// Debug logging
-const DEBUG = true;
-const logDebug = (...args: any[]) => {
-    if (DEBUG) console.log('[Login Store]', ...args);
-};
-
-// Initialize store with default state
-const defaultState: LoginState = {
-    method: LoginMethod.NONE,
-    loggedIn: false
-};
-
-export const loginState = writable<LoginState>(defaultState);
-
-// Connection status for nostrconnect
-export const connectStatus = writable<{
-    status: 'idle' | 'waiting' | 'connected' | 'error';
-    message?: string;
-    clientPubkey?: string;
-    secret?: string;
-    subscription?: NDKSubscription;
-}>({
-    status: 'idle'
-});
-
-// Load login state from localStorage when browser is available
-if (browser) {
-    const savedState = localStorage.getItem(LOGIN_STATE_KEY);
-    if (savedState) {
-        try {
-            loginState.set(JSON.parse(savedState));
-        } catch (error) {
-            console.error('Error parsing login state:', error);
-        }
-    }
-}
-
-/**
- * Check if a NIP-07 extension is available in the browser
- */
-export async function checkNip07Extension(): Promise<boolean> {
-    if (typeof window === 'undefined') return false;
-    return !!(window as any).nostr;
-}
-
-/**
- * Save login state to localStorage
- */
-function saveLoginState(state: LoginState) {
-    if (!browser) return;
-
-    try {
-        localStorage.setItem(LOGIN_STATE_KEY, JSON.stringify(state));
-    } catch (error) {
-        console.error('Error saving login state:', error);
-    }
-}
-
-/**
- * Login with NIP-07 browser extension
- */
-export async function loginWithExtension(): Promise<boolean> {
-    try {
-        // Check if extension is available
-        if (!(await checkNip07Extension())) {
-            throw new Error('NIP-07 extension not found');
-        }
-
-        // Create and set NIP-07 signer
-        const nip07Signer = new NDKNip07Signer();
-        logDebug('Created NIP-07 signer');
-        await nip07Signer.blockUntilReady();
-        ndk.signer = nip07Signer;
-        logDebug('Set NIP-07 signer', ndk.signer);
-
-        // Update login state
-        const newState: LoginState = {
-            method: LoginMethod.EXTENSION,
-            loggedIn: true
-        };
-        loginState.set(newState);
-        saveLoginState(newState);
-
-        return true;
-    } catch (error) {
-        console.error('Error logging in with extension:', error);
-        return false;
-    }
-}
-
-/**
- * Login with private key (nsec)
- */
-export async function loginWithNsec(nsec: string): Promise<boolean> {
-    try {
-        // Validate nsec format
-        if (!nsec.startsWith('nsec1')) {
-            throw new Error('Invalid nsec format');
-        }
-
-        // Create and set private key signer
-        const privateKeySigner = new NDKPrivateKeySigner(nsec);
-        logDebug('Created Private Key signer');
-        ndk.signer = privateKeySigner;
-        logDebug('Set Private Key signer');
-
-        // Update login state - store sanitized data (we don't want to log the actual nsec)
-        const newState: LoginState = {
-            method: LoginMethod.NSEC,
-            loggedIn: true,
-            data: { nsec }
-        };
-        loginState.set(newState);
-        saveLoginState(newState);
-
-        return true;
-    } catch (error) {
-        console.error('Error logging in with nsec:', error);
-        return false;
-    }
-}
-
-/**
- * Login with NIP-46 Bunker
- */
-export async function loginWithBunker(bunkerUrl: string): Promise<boolean> {
-    // Validate bunker URL format
-    if (!bunkerUrl.startsWith('bunker://')) {
-        throw new Error('Invalid bunker URL format');
-    }
-
-    // Create and set NIP-46 signer
-    const nip46Signer = new NDKNip46Signer(ndk, bunkerUrl);
-    logDebug('Created NIP-46 signer');
-    await nip46Signer.blockUntilReady();
-    ndk.signer = nip46Signer;
-    logDebug('Set NIP-46 signer');
-
-    // Update login state
-    const newState: LoginState = {
-        method: LoginMethod.BUNKER,
-        loggedIn: true,
-        data: { bunkerUrl }
-    };
-    loginState.set(newState);
-    saveLoginState(newState);
-
-    return true;
-}
-
-export async function createNostrConnectSigner(relay: string): Promise<NDKNip46Signer> {
-
-    const localPrivateKeyBytes = nostrTools.generateSecretKey();
-    const localPrivateKey = bytesToHex(localPrivateKeyBytes);
-    const perms = `sign_event:${FOLLOW_LIST_KIND},get_public_key`;
-    const ndkPrivateKeySigner = new NDKPrivateKeySigner(hexToBytes(localPrivateKey));
-    const signer = NDKNip46Signer.nostrconnect(ndk, relay, ndkPrivateKeySigner, {
-        name: "following.space",
-        perms: perms
-    });
-    return signer;
-}
-
-/**
- * Login with NostrConnect
- */
-export async function loginWithNostrConnect(signer: NDKNip46Signer): Promise<boolean> {
-    try {
-        await signer.blockUntilReady();
-        ndk.signer = signer;
-        logDebug('Set NostrConnect signer');
-
-        // ugly hack: get current serialized signer and use that as the signer payload
-        let signerPayload = '';
-        const currentLoginState = get(loginState);
-        if (currentLoginState.loggedIn && currentLoginState.data?.nostrconnect && currentLoginState.data.nostrconnect.signer) {
-            signerPayload = currentLoginState.data.nostrconnect.signer;
-        } else {
-            signerPayload = signer.toPayload();
-        }
-
-        const newState: LoginState = {
-            method: LoginMethod.NOSTRCONNECT,
-            loggedIn: true,
-            data: {
-                nostrconnect: {
-                    signer: signerPayload
-                }
-            }
-        };
-        loginState.set(newState);
-        saveLoginState(newState);
-
-        return true;
-    } catch (error) {
-        console.error('Error logging in with NostrConnect:', error);
-        return false;
-    }
-}
-
-
-/**
- * Cancel an active nostrconnect connection attempt
- */
-export function cancelNostrConnectAttempt(): void {
-    const status = get(connectStatus);
-
-    if (status.subscription) {
-        status.subscription.stop();
-    }
-
-    connectStatus.set({
-        status: 'idle'
-    });
-}
-
-/**
- * Generate a random string of specified length
- */
-function generateRandomString(length: number): string {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-}
-
-/**
- * Initialize signer based on saved login state
- */
 export async function initializeSigner(): Promise<boolean> {
-    if (!browser) {
-        return false;
-    }
-
-    // Get the current login state
-    const state = get(loginState);
-    logDebug('Initializing signer with state:', state);
-
-    // If not logged in according to store, check localStorage as a backup
-    if (!state.loggedIn) {
-        const savedState = localStorage.getItem(LOGIN_STATE_KEY);
-        if (savedState) {
-            try {
-                const parsedState = JSON.parse(savedState);
-                if (parsedState.loggedIn) {
-                    loginState.set(parsedState);
-                    logDebug('Restored login state from localStorage:', parsedState);
-                    // Continue with the restored state
-                    return await initializeSignerFromState(parsedState);
-                }
-            } catch (error) {
-                console.error('Error parsing login state from localStorage:', error);
-            }
-        }
-        return false;
-    }
-
-    // If we have a logged in state, initialize the appropriate signer
-    return await initializeSignerFromState(state);
-}
-
-/**
- * Helper function to initialize signer from a specific state
- */
-async function initializeSignerFromState(state: LoginState): Promise<boolean> {
-    if (!state.loggedIn) {
-        return false;
-    }
-
+  if (!browser) return false;
+  if (initialized) { await initialized; return !!accounts.active; }
+  const restorationToken = generation;
+  initialized = (async () => {
+    const { getNostrRuntime } = await import('../nostr/runtime.client');
+    const runtime = await getNostrRuntime();
+    NostrConnectSigner.pool = runtime.pool;
+    NostrConnectSigner.subscriptionMethod = runtime.pool.subscription.bind(runtime.pool);
+    NostrConnectSigner.publishMethod = async (relays, event) => {
+      const responses = await runtime.pool.publish(relays, event, { timeout: 8000, retries: 1, reconnect: 1, waitForAuth: false });
+      if (!responses.some((response) => response.ok)) throw new Error('The signer relay did not accept the request');
+    };
+    if (restorationToken !== generation) return false;
     try {
-        switch (state.method) {
-            case LoginMethod.EXTENSION:
-                return await loginWithExtension();
-
-            case LoginMethod.NSEC:
-                if (state.data?.nsec) {
-                    return await loginWithNsec(state.data.nsec);
-                }
-                break;
-
-            case LoginMethod.BUNKER:
-                if (state.data?.bunkerUrl) {
-                    return await loginWithBunker(state.data.bunkerUrl);
-                }
-                break;
-
-            case LoginMethod.NOSTRCONNECT:
-                if (state.data?.nostrconnect) {
-                    const { signer } = state.data.nostrconnect;
-                    if (signer) {
-                        const signerObject = await NDKNip46Signer.fromPayload(signer, ndk);
-                        return await loginWithNostrConnect(signerObject);
-                    }
-                }
-                break;
-
-            default:
-                logDebug('Unknown login method:', state.method);
-                return false;
+      const saved = [...JSON.parse(localStorage.getItem(LOCAL) || '[]'), ...JSON.parse(sessionStorage.getItem(SESSION) || '[]')];
+      accounts.fromJSON(saved.filter((account) => /^[0-9a-f]{64}$/i.test(account?.pubkey || '') && ['extension', 'nostr-connect'].includes(account?.type)), true);
+      const active = localStorage.getItem(ACTIVE);
+      if (active && accounts.getAccount(active)) accounts.setActive(active);
+      if (!accounts.active) {
+        const old = JSON.parse(localStorage.getItem(LEGACY) || 'null');
+        if (old?.loggedIn) {
+          let migrated: IAccount | undefined;
+          if (old.method === 'extension') {
+            const pubkey = JSON.parse(localStorage.getItem('nostr-follow-list:user') || 'null')?.pubkey;
+            migrated = /^[0-9a-f]{64}$/i.test(pubkey || '') ? new ExtensionAccount(pubkey, new ExtensionSigner()) : await ExtensionAccount.fromExtension();
+          } else if (old.method === 'nsec' && old.data?.nsec) migrated = PrivateKeyAccount.fromKey(old.data.nsec);
+          else authNotice.set('Please pair your remote signer again to finish upgrading your login.');
+          if (migrated) activate(migrated, restorationToken);
         }
-    } catch (error) {
-        console.error('Error initializing signer:', error);
-        // Reset login state on error
-        logout();
-        return false;
-    }
-
-    return false;
+      }
+    } catch { authNotice.set('Saved login could not be restored. Please sign in again.'); }
+    accounts.accounts$.subscribe(save);
+    accounts.active$.subscribe((account) => {
+      save();
+    });
+    return !!accounts.active;
+  })();
+  try { return await initialized; } catch { initialized = undefined; return false; }
 }
-
-/**
- * Log out the current user
- */
-export function logout(): void {
-    // Clear NDK signer
-    ndk.signer = undefined;
-
-    // Reset login state
-    loginState.set(defaultState);
-
-    // Clear login state from localStorage
-    if (browser) {
-        localStorage.removeItem(LOGIN_STATE_KEY);
-    }
-
-    logDebug('User logged out');
+export async function checkNip07Extension() { return browser && !!window.nostr; }
+export function cancelNostrConnectAttempt() {
+  generation++;
+  pending?.controller.abort();
+  if (pending) void pending.signer.close();
+  pending = undefined;
+  connectStatus.set({ status: 'idle' });
 }
-
-/**
- * Check if user is currently logged in
- */
-export function isLoggedIn(): boolean {
-    return get(loginState).loggedIn;
-} 
+export async function loginWithExtension() {
+  await initializeSigner();
+  cancelNostrConnectAttempt();
+  const token = generation;
+  activate(await ExtensionAccount.fromExtension(), token);
+  return true;
+}
+export async function loginWithNsec(nsec: string) {
+  await initializeSigner();
+  cancelNostrConnectAttempt();
+  activate(PrivateKeyAccount.fromKey(nsec.trim()), generation);
+  return true;
+}
+export async function loginWithBunker(uri: string) {
+  await initializeSigner();
+  cancelNostrConnectAttempt();
+  const token = generation;
+  const parsed = NostrConnectSigner.parseBunkerURI(uri.trim());
+  const signer = new NostrConnectSigner({ ...parsed, timeout: 15000 });
+  pending = { signer, controller: new AbortController() };
+  try {
+    await signer.connect(parsed.bunkerSecret, permissions);
+    const account = new NostrConnectAccount(await signer.getPublicKey(), signer);
+    if (token !== generation) throw new Error('Login cancelled');
+    pending = undefined;
+    activate(account, token);
+    return true;
+  } catch (error) { await signer.close(); if (token === generation) pending = undefined; throw error; }
+}
+export async function createNostrConnectSigner(relay?: string) {
+  await initializeSigner();
+  cancelNostrConnectAttempt();
+  const relays = normalizeRelays(relay?.trim() ? [relay.trim()] : SIGNER_RELAYS);
+  if (!relays.length) throw new Error('Enter a valid relay URL');
+  const signer = new NostrConnectSigner({ relays, timeout: 15000 });
+  pending = { signer, controller: new AbortController() };
+  connectStatus.set({ status: 'waiting', message: 'Waiting for your signer…' });
+  return Object.assign(signer, { nostrConnectUri: signer.getNostrConnectURI({ name: APP_NAME, url: location.origin, permissions }) });
+}
+export async function loginWithNostrConnect(signer: NostrConnectSigner) {
+  if (pending?.signer !== signer) throw new Error('Login cancelled');
+  const token = generation;
+  const controller = pending.controller;
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    await signer.waitForSigner(controller.signal);
+    controller.signal.throwIfAborted();
+    const pubkey = await signer.getPublicKey();
+    if (token !== generation) throw new Error('Login cancelled');
+    pending = undefined;
+    activate(new NostrConnectAccount(pubkey, signer), token);
+    connectStatus.set({ status: 'connected' });
+    return true;
+  } catch (error) { await signer.close(); if (token === generation) pending = undefined; throw error; }
+  finally { clearTimeout(timer); }
+}
+export function logout() {
+  cancelNostrConnectAttempt();
+  for (const account of accounts.accounts) {
+    if (account instanceof BaseAccount) account.abortQueue(new Error('Signed out'));
+    if (account.signer instanceof NostrConnectSigner) void account.signer.logout({ timeout: 1500 });
+    accounts.removeAccount(account.id);
+  }
+  accounts.clearActive();
+  if (browser) { try { localStorage.removeItem(LEGACY); save(); } catch { /* Optional storage. */ } }
+}

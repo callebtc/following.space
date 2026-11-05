@@ -1,54 +1,21 @@
 <script lang="ts">
   import { user, followUsers, unfollowUsers } from '$lib/stores/user';
   import type { FollowListEntry } from '$lib/types/follow-list';
-
   export let entry: FollowListEntry;
   export let variant: 'primary' | 'outline' = 'primary';
-
-  // Check if the current user is following a specific pubkey
-  function isFollowing(pubkey: string): boolean {
-    if (!$user) return false;
-    if (!$user.following || typeof $user.following.has !== 'function') return false;
-    return $user.following.has(pubkey);
-  }
-
-  // Handle following a user
-  async function handleFollow() {
-    if (!$user) return;
-    
-    try {
-      await followUsers([entry.pubkey]);
-    } catch (err) {
-      console.error('Error following user:', err);
-    }
-  }
-
-  // Handle unfollowing a user
-  async function handleUnfollow() {
-    if (!$user) return;
-    
-    try {
-      await unfollowUsers([entry.pubkey]);
-    } catch (err) {
-      console.error('Error unfollowing user:', err);
-    }
+  let busy = false;
+  let error = '';
+  $: following = $user?.following.has(entry.pubkey) ?? false;
+  async function toggle() {
+    if (busy) return;
+    busy = true; error = '';
+    try { await (following ? unfollowUsers([entry.pubkey]) : followUsers([entry.pubkey])); }
+    catch (err) { error = err instanceof Error ? err.message : 'Follow update failed'; }
+    finally { busy = false; }
   }
 </script>
-
 {#if $user}
-  {#if isFollowing(entry.pubkey)}
-    <button 
-      on:click={handleUnfollow}
-      class="btn btn-outline"
-    >
-      Following
-    </button>
-  {:else}
-    <button 
-      on:click={handleFollow}
-      class="btn {variant === 'primary' ? 'btn-primary' : 'btn-outline'}"
-    >
-      Follow
-    </button>
-  {/if}
-{/if} 
+  <div><button disabled={busy} on:click={toggle} class="btn {following || variant === 'outline' ? 'btn-outline' : 'btn-primary'}">{busy ? 'Saving…' : following ? 'Following' : 'Follow'}</button>
+    {#if error}<p role="alert" class="mt-2 text-xs text-danger max-w-48">{error}</p>{/if}
+  </div>
+{/if}

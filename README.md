@@ -7,15 +7,15 @@ A minimalistic Nostr application for creating, sharing, and discovering Nostr Fo
 - [SvelteKit](https://kit.svelte.dev/) - Frontend framework
 - [TypeScript](https://www.typescriptlang.org/) - Type-safe JavaScript
 - [Tailwind CSS](https://tailwindcss.com/) - Utility-first CSS framework
-- [NDK](https://github.com/nostr-dev-kit/ndk) - Nostr Development Kit
-- [nostr-tools](https://github.com/nbd-wtf/nostr-tools) - Nostr utilities
+- [Applesauce](https://applesauce.build) - EventStore, loaders, relay pool, accounts, signers and content parsing
+- [RxJS](https://rxjs.dev/) - Shared reactive queries and cancellable loading sessions
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js (v16 or higher)
-- npm (v7 or higher)
+- Node.js 22 or newer
+- npm
 
 ### Installation
 
@@ -52,11 +52,41 @@ You can preview the production build with `npm run preview`.
 
 ## How It Works
 
-- Users can log in with a NIP-07 compatible browser extension
+- Users can log in with a NIP-07 browser extension, an nsec, or a NIP-46 bunker/QR session
 - Create follow lists by searching for users and adding them to a list
 - Publish follow lists as replaceable events (kind 39089)
 - Browse and discover follow lists created by others
 - View follow lists and follow users directly from them
+- Configure account lookup relays and Blossom media servers in Settings
+- Upload pack cover images to Blossom servers
+- Use a light or dark theme that follows your system preference
+
+## Architecture and sessions
+
+A shared browser EventStore receives cached, loaded, live and acknowledged local events. Svelte observes that store through RxJS-backed readables. An application-wide directory sync hydrates cached packs, reconciles history with NIP-77/paginated REQ fallback, and shares live updates across routes and filters. Pack history starts with a finite range and expands on demand; account metadata uses the same sync loader. Member posts use a bounded selection of NIP-65 outbox relays.
+
+AccountManager owns authentication. Extension identity survives reloads. Raw nsec keys remain in memory; signing in again is required after a reload. Remote signer credentials are stored in sessionStorage for the current tab. Existing compatible logins and account-scoped follow snapshots migrate automatically; older remote signer payloads may need pairing again. Logout preserves follow snapshots and unrelated browser preferences.
+
+Server previews use a separate, bounded read-only Applesauce runtime and close its connections after each request. Generated images live in `.cache/previews` and are served through a dedicated route, keyed by pack author, identifier and revision. The server needs write access to that cache directory.
+
+## Checks
+
+```bash
+npm run check
+npm test
+npm run build
+```
+
+The controlled browser smoke test uses generated keys and simulated cache/relay responses. It never publishes to public relays:
+
+```bash
+npx playwright install chromium
+npm run preview -- --host 127.0.0.1 --port 5188
+# In another terminal:
+npm run test:browser
+```
+
+Set `BASE_URL` to use another preview URL or `CHROMIUM_EXECUTABLE` to use an existing browser binary. Build before starting the preview. Remote signer integration tests use a real Applesauce provider over an in-memory transport; hardware/extensions and public relay behavior still warrant deployment smoke testing.
 
 ## Nostr Follow List Event Format
 

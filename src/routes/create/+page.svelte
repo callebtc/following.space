@@ -1,15 +1,48 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { packHref, packRelayHints } from '$lib/nostr/protocol/pack-link';
+  import { onMount, onDestroy } from 'svelte';
+  import { requireAuth } from '$lib/services/auth';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { user } from '$lib/stores/user';
-  import { isValidNpub, npubToHex, isValidNprofile, nprofileToNpubAndRelays } from '$lib/utils/npub';
-  import { publishFollowList, getFollowListById, deleteFollowList } from '$lib/services/follow-list.service';
-  import { getProfileByPubkey } from '$lib/stores/user';
-  import { type UserSearchResult, searchUsersByName } from '$lib/services/user-search';
+  import { publishFollowList, deleteFollowList } from '$lib/features/packs/commands';
+  import { loadPack } from '$lib/features/packs/detail';
+  import { type UserSearchResult, observeUserSearch } from '$lib/features/profiles/user-search';
+  import { fromEvent, takeUntil } from 'rxjs';
   import type { FollowListEntry } from '$lib/types/follow-list';
   import PublicKeyDisplay from '$lib/components/PublicKeyDisplay.svelte';
-  import ProfileImage from '$lib/components/ProfileImage.svelte';
+  import ReactiveProfile from '$lib/components/ReactiveProfile.svelte';
+  import type { NostrRuntime } from '$lib/nostr/runtime';
+  import { getNostrRuntime } from '$lib/nostr/runtime.client';
+  import { accounts } from '$lib/nostr/accounts';
+  import { uploadPackMedia } from '$lib/features/media/blossom';
+  import { loadBlossomServers } from '$lib/features/media/servers';
+  let uploading = false;
+  let uploadMessage = '';
+  async function handleMediaUpload(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file || uploading || submitting) return;
+    uploading = true; error = ''; uploadMessage = '';
+    const account = accounts.active;
+    try {
+      if (!account) throw new Error('Sign in first');
+      const blob = await uploadPackMedia(file, await loadBlossomServers(await getNostrRuntime(), account.pubkey), async (draft) => {
+        if (accounts.active !== account) throw new Error('Account changed. Please retry.');
+        const signed = await account.signEvent(draft);
+        if (accounts.active !== account) throw new Error('Account changed. Please retry.');
+        return signed;
+      }, pageController.signal);
+      if (accounts.active !== account) throw new Error('Account changed. Please retry.');
+      if (!pageController.signal.aborted) {
+        coverImageUrl = blob.url;
+        uploadMessage = 'Cover image uploaded.';
+      }
+    } catch (err) {
+      if (!pageController.signal.aborted) error = err instanceof Error ? err.message : 'Upload failed';
+    } finally { uploading = false; input.value = ''; }
+  }
+  let runtime: NostrRuntime | undefined;
   const DEBUG = true;
   const logDebug = (...args: any[]) => {
     if (DEBUG) console.log('[Create Page]', ...args);
@@ -20,6 +53,7 @@
   let coverImageUrl = '';
   let description = '';
   let searchQuery = '';
+  let searchSource: 'ranking' | 'relay' = 'ranking';
   let searching = false;
   let searchResults: UserSearchResult[] = [];
   let selectedEntries: FollowListEntry[] = [];
@@ -31,6 +65,10 @@
   let editId = '';
   let listId = '';
   let listEventId = '';
+  let listAuthor = '';
+  let searchController: AbortController | undefined;
+  const pageController = new AbortController();
+  onDestroy(() => { searchController?.abort(); pageController.abort(); });
   let showDeleteConfirm = false;
   let deleting = false;
   let loading = false;
@@ -41,6 +79,8 @@
   let entriesValid = true;
   
   onMount(async () => {
+    if (!(await requireAuth()) || pageController.signal.aborted) return;
+    runtime = await getNostrRuntime();
     // Check if we're in edit mode
     const editParam = $page.url.searchParams.get('edit');
     if (editParam) {
@@ -94,20 +134,16 @@
   // Load an existing list for editing
   async function loadExistingList(id: string, pubkey?: string) {
     try {
-      const list = await getFollowListById(id, pubkey);
+      const list = await loadPack(await getNostrRuntime(), id, pubkey, pageController.signal);
       if (!list) {
         error = 'Could not find the follow list to edit';
         editMode = false;
         return;
       }
       
-      // // Check if the user is the author
-      // if (!$user || $user.pubkey !== list.pubkey) {
-      //   error = 'You are not authorized to edit this follow list';
-      //   editMode = false;
-      //   return;
-      // }
-      
+      if (pageController.signal.aborted) return;
+      if (!$user || list.pubkey !== $user.pubkey) throw new Error('Only the author can edit this pack');
+      listAuthor = list.pubkey;
       // Load the list data into the form
       name = list.name;
       coverImageUrl = list.coverImageUrl;
@@ -116,15 +152,6 @@
       listEventId = list.eventId;
       selectedEntries = [...list.entries];
 
-      // reactively get profile info for each entry
-      selectedEntries.forEach(async (entry) => {
-        const profile = await getProfileByPubkey(entry.pubkey);
-        entry.name = profile.name;
-        entry.picture = profile.picture;
-        entry.bio = profile.bio;
-        entry.nip05 = profile.nip05;
-      });
-      
       logDebug('Loaded existing list for editing:', { id, name, entries: selectedEntries.length });
     } catch (err: any) {
       console.error('Error loading follow list for editing:', err);
@@ -134,109 +161,21 @@
   }
   
   // Handle user search
-  async function handleSearch() {
-    if (!searchQuery.trim()) return;
-    
-    searching = true;
-    searchResults = [];
-    duplicateEntryError = false;
-    noSearchResults = false; // Reset no results flag
-    error = ''; // Clear previous errors
-    
-    try {
-      if (isValidNpub(searchQuery)) {
-        // Convert npub to hex
-        const pubkey = await npubToHex(searchQuery);
-
-        if (!pubkey) {
-          error = 'Invalid npub';
-          return;
-        }
-        
-        // Get profile
-        const profile = await getProfileByPubkey(pubkey);
-        
-        if (selectedEntries.some(entry => entry.pubkey === pubkey)) {
-          logDebug('Entry already in list:', pubkey);
-          duplicateEntryError = true;
-          setTimeout(() => {
-            duplicateEntryError = false;
-          }, 3000);
-          searching = false;
-          return;
-        }
-
-        // Create a single search result
-        searchResults = [{
-          pubkey,
-          relays: [],
-          rank: 0,
-          name: profile.name || 'Unknown',
-          picture: profile.picture || '',
-        }];
-      } else if (isValidNprofile(searchQuery)) {
-        // Convert nprofile to npub and relays
-        const { npub, relays } = await nprofileToNpubAndRelays(searchQuery);
-        if (!npub) {
-          error = 'Invalid nprofile';
-          return;
-        }
-
-        // Convert npub to hex
-        const pubkey = await npubToHex(npub);
-
-        if (!pubkey) {
-          error = 'Invalid npub';
-          return;
-        }
-        
-        // Get profile
-        const profile = await getProfileByPubkey(pubkey);
-        
-        if (selectedEntries.some(entry => entry.pubkey === pubkey)) {
-          logDebug('Entry already in list:', pubkey);
-          duplicateEntryError = true;
-          setTimeout(() => {
-            duplicateEntryError = false;
-          }, 3000);
-          searching = false;
-          return;
-        }
-
-        // Create a single search result
-        searchResults = [{
-          pubkey,
-          relays,
-          rank: 0,
-          name: profile.name || 'Unknown',
-          picture: profile.picture || '',
-        }];
-      } else {
-        // Search for users by name
-        const results = await searchUsersByName(searchQuery);
-        
-        // Filter out duplicates that are already in the selected entries
-        searchResults = results.filter(result => 
-          !selectedEntries.some(entry => entry.pubkey === result.pubkey)
-        );
-        
-        if (results.length > 0 && searchResults.length === 0) {
-          noSearchResults = true;
-          setTimeout(() => {
-            noSearchResults = false;
-          }, 3000);
-        }
-      }
-      
-      logDebug(`Search returned ${searchResults.length} results`);
-    } catch (err: any) {
-      console.error('Error searching:', err);
-      error = `Search error: ${err.message || 'An unknown error occurred'}`;
-    } finally {
-      searching = false;
-    }
+  function handleSearch() {
+    searchController?.abort();
+    const controller = searchController = new AbortController();
+    searching = true; error = ''; searchResults = []; duplicateEntryError = false; noSearchResults = false;
+    observeUserSearch(searchQuery, 10, searchSource).pipe(takeUntil(fromEvent(controller.signal, 'abort'))).subscribe({
+      next: ({ results, loading }) => {
+        searching = loading;
+        searchResults = results.filter((result) => !selectedEntries.some((entry) => entry.pubkey === result.pubkey));
+        duplicateEntryError = !loading && results.length > 0 && searchResults.length === 0;
+        noSearchResults = !loading && results.length === 0;
+      },
+      error: (err) => { searching = false; error = err instanceof Error ? err.message : 'Search failed'; }
+    });
   }
-  
+
   // Add a search result to the selected entries
   function addEntry(result: UserSearchResult) {
     // Check if already added
@@ -252,9 +191,7 @@
       ...selectedEntries, 
       {
         pubkey: result.pubkey,
-        relay: result.relays[0] || '',
-        name: result.name,
-        picture: result.picture
+        relay: result.relays[0] || ''
       }
     ];
     
@@ -294,6 +231,7 @@
   
   // Handle form submission
   async function handleSubmit() {
+    if (uploading || submitting) return;
     // Reset validation
     nameValid = !!name.trim();
     entriesValid = selectedEntries.length > 0;
@@ -314,7 +252,7 @@
     
     try {
       // Publish the follow list (same method for create and edit)
-      const event = await publishFollowList(name, coverImageUrl, selectedEntries, editMode ? listId : undefined, description);
+      const event = await publishFollowList(name, coverImageUrl, selectedEntries, editMode ? listId : undefined, description, editMode ? listAuthor : undefined);
       logDebug('Published event with ID:', event?.id);
       if (event) {
         // Navigate to the new follow list
@@ -325,7 +263,8 @@
           logDebug('Publish failed - no ID returned');
           return;
         }
-        goto(`/d/${dTag[1]}?p=${event.pubkey}`);
+        const hints = packRelayHints(runtime ?? await getNostrRuntime(), { pubkey: event.pubkey, eventId: event.id });
+        goto(packHref({ id: dTag[1], pubkey: event.pubkey }, hints));
       } else {
         error = 'Failed to publish follow list. Please try again.';
         logDebug('Publish failed - no ID returned');
@@ -352,27 +291,26 @@
 
   // Function to handle input changes in the search box
   function handleInputChange() {
-    if (searching) {
-      logDebug('Input changed, aborting search.');
-      searching = false;
-      searchResults = []; // Clear results immediately
-      noSearchResults = false;
-      error = ''; // Clear any search error
-    }
+    searchController?.abort();
+    searching = false;
+    searchResults = [];
+    noSearchResults = false;
+    duplicateEntryError = false;
+    error = '';
   }
 </script>
 
 <div class="container py-10">
   <div class="max-w-2xl mx-auto">
     <div class="flex justify-between items-center mb-8">
-      <h1 class="text-3xl font-bold text-gray-900">{editMode ? 'Edit' : 'Create'} Follow Pack</h1>
+      <h1 class="text-3xl font-bold text-foreground">{editMode ? 'Edit' : 'Create'} Follow Pack</h1>
       <a href="/" class="btn btn-secondary">Cancel</a>
     </div>
     
     {#if !$user}
-      <div class="bg-yellow-50 border border-yellow-200 rounded-md p-6 text-center">
-        <h2 class="text-xl font-medium text-yellow-800 mb-2">Login Required</h2>
-        <p class="text-yellow-700 mb-4">
+      <div class="bg-warning-soft border border-warning rounded-md p-6 text-center">
+        <h2 class="text-xl font-medium text-warning mb-2">Login Required</h2>
+        <p class="text-warning mb-4">
           You need to be logged in to create a follow list.
         </p>
         <a href="/" class="btn btn-primary">Back to Home</a>
@@ -383,7 +321,7 @@
       </div>
     {:else}
       {#if error}
-        <div class="bg-red-50 border border-red-200 rounded-md p-4 mb-6 text-red-700">
+        <div class="bg-danger-soft border border-danger rounded-md p-4 mb-6 text-danger">
           {error}
         </div>
       {/if}
@@ -391,9 +329,9 @@
       <!-- Delete Confirmation Modal -->
       {#if showDeleteConfirm}
         <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div class="bg-white rounded-lg p-6 max-w-md w-full">
-            <h3 class="text-xl font-bold text-gray-900 mb-4">Delete Follow Pack</h3>
-            <p class="text-gray-700 mb-6">
+          <div class="bg-surface rounded-lg p-6 max-w-md w-full">
+            <h3 class="text-xl font-bold text-foreground mb-4">Delete Follow Pack</h3>
+            <p class="text-body mb-6">
               Are you sure you want to delete the follow list "{name}"? This action cannot be undone.
             </p>
             <div class="flex justify-end space-x-3">
@@ -423,61 +361,70 @@
             e.preventDefault();
           }
         }}
-        class="bg-white shadow-sm rounded-lg overflow-hidden"
+        class="bg-surface shadow-sm rounded-lg overflow-hidden"
       >
         <div class="p-6 border-b">
           <h2 class="text-xl font-medium mb-6">Follow Pack Details</h2>
           
           <!-- Name field -->
           <div class="mb-4">
-            <label for="name" class="block text-sm font-medium text-gray-700 mb-1">
-              List Name <span class="text-red-500">*</span>
+            <label for="name" class="block text-sm font-medium text-body mb-1">
+              List Name <span class="text-danger">*</span>
             </label>
             <input
               type="text"
               id="name"
               bind:value={name}
               on:blur={() => nameValid = !!name.trim()}
-              class="w-full px-3 py-2 border {!nameValid ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+              class="w-full px-3 py-2 border {!nameValid ? 'border-red-500' : 'border-strong'} rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
               placeholder="E.g., Nostr Developers to Follow"
             />
             {#if !nameValid}
-              <p class="mt-1 text-sm text-red-600">Name is required</p>
+              <p class="mt-1 text-sm text-danger">Name is required</p>
             {/if}
           </div>
           
           <!-- Cover image URL field -->
           <div class="mb-6">
-            <label for="coverImageUrl" class="block text-sm font-medium text-gray-700 mb-1">
+            <label for="coverImageUrl" class="block text-sm font-medium text-body mb-1">
               Cover Image URL
             </label>
             <input
               type="url"
               id="coverImageUrl"
+              disabled={uploading || submitting}
               bind:value={coverImageUrl}
-              class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+              class="w-full px-3 py-2 border border-strong rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
               placeholder="https://example.com/image.jpg"
             />
-            <p class="mt-1 text-xs text-gray-500">Optional: URL to an image that represents this list</p>
+            <p class="mt-1 text-xs text-muted-foreground">Optional: URL to an image that represents this list</p>
           </div>
           
+          <div class="mb-6">
+            <label for="cover-upload" class="block text-sm font-medium text-body mb-1">Upload cover image</label>
+            <input id="cover-upload" type="file" accept="image/*" on:change={handleMediaUpload} disabled={uploading || submitting} />
+            <p class="mt-1 text-xs text-muted-foreground">Choose an image to fill the cover URL. Configure Blossom media servers in <a class="underline" href="/settings">Settings</a>.</p>
+            {#if uploading}<p role="status">Uploading image…</p>{/if}
+            {#if uploadMessage}<p role="status">{uploadMessage}</p>{/if}
+          </div>
+
           <!-- Description field -->
           <div class="mb-6">
-            <label for="description" class="block text-sm font-medium text-gray-700 mb-1">
+            <label for="description" class="block text-sm font-medium text-body mb-1">
               Description
             </label>
             <textarea
               id="description"
               bind:value={description}
-              class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+              class="w-full px-3 py-2 border border-strong rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
               placeholder="Enter a description for this follow list"
             ></textarea>
           </div>
           
           {#if coverImageUrl}
             <div class="mb-6">
-              <p class="block text-sm font-medium text-gray-700 mb-2">Cover Image Preview</p>
-              <div class="h-36 bg-gray-100 rounded-md overflow-hidden">
+              <p class="block text-sm font-medium text-body mb-2">Cover Image Preview</p>
+              <div class="h-36 bg-muted rounded-md overflow-hidden">
                 <img 
                   src={coverImageUrl} 
                   alt="Cover Preview" 
@@ -494,9 +441,16 @@
         <div class="p-6 border-b">
           <h2 class="text-xl font-medium mb-6">Add Users to Follow Pack</h2>
           
+          <label class="block text-sm mb-3">
+            Search provider
+            <select bind:value={searchSource} on:change={handleInputChange} class="ml-2 border border-strong rounded px-2 py-1">
+              <option value="ranking">Open Ranking (Vertex)</option>
+              <option value="relay">Relay search (fallback)</option>
+            </select>
+          </label>
           <!-- Search field -->
           <div class="mb-4">
-            <label for="search" class="block text-sm font-medium text-gray-700 mb-1">
+            <label for="search" class="block text-sm font-medium text-body mb-1">
               Search for Nostr Users
             </label>
             <div class="flex">
@@ -504,7 +458,7 @@
                 type="text"
                 id="search"
                 bind:value={searchQuery}
-                class="flex-1 px-3 py-2 border border-gray-300 rounded-l-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
+                class="flex-1 px-3 py-2 border border-strong rounded-l-md shadow-sm focus:ring-purple-500 focus:border-purple-500"
                 placeholder="Enter username or npub"
                 on:keydown={e => {
                   if (e.key === 'Enter') {
@@ -523,49 +477,44 @@
                 {searching ? 'Searching...' : 'Search'}
               </button>
             </div>
-            <p class="mt-1 text-xs text-gray-500">
+            <p class="mt-1 text-xs text-muted-foreground">
               {#if duplicateEntryError}
-                <span class="text-red-600">This user is already in your list!</span>
+                <span class="text-danger">This user is already in your list!</span>
               {:else}
                 Search by username or paste a nostr npub or nprofile
               {/if}
             </p>
             
             {#if error}
-              <p class="mt-2 text-sm text-red-600">{error}</p>
+              <p class="mt-2 text-sm text-danger">{error}</p>
             {/if}
           </div>
           
           <!-- Search results -->
           {#if searching}
-            <div class="bg-white rounded-md shadow-sm mt-4 p-4 text-center">
+            <div class="bg-surface rounded-md shadow-sm mt-4 p-4 text-center">
               <div class="flex justify-center">
                 <div class="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-purple-600"></div>
               </div>
-              <p class="mt-2 text-gray-600">Searching...</p>
+              <p class="mt-2 text-muted-foreground">Searching...</p>
             </div>
-          {:else if searchResults.length > 0}
-            <div class="bg-white rounded-md shadow-sm mt-4">
-              <ul class="divide-y divide-gray-200">
+          {/if}
+          {#if searchResults.length > 0}
+            <div class="bg-surface rounded-md shadow-sm mt-4">
+              <ul class="divide-y divide-line">
                 {#each searchResults as result}
                   <li class="p-4 flex items-center justify-between">
                     <div class="flex items-center">
-                      <ProfileImage 
-                        src={result.picture} 
-                        alt={result.name || 'User'} 
-                        size="md" 
-                        classes="mr-3"
-                      />
                       <div>
-                        <div class="flex items-center">
-                          <h4 class="text-lg font-medium text-gray-900">{result.name || 'Unknown User'}</h4>
+                        <div class="flex items-center gap-3">
+                          {#if runtime}<ReactiveProfile {runtime} pubkey={result.pubkey} relays={result.relays} showName />{/if}
                           {#if $user?.following?.has(result.pubkey)}
-                            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Following</span>
+                            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-success-soft text-success">Following</span>
                           {/if}
                         </div>
                         <PublicKeyDisplay pubkey={result.pubkey} />
                         {#if result.relays.length > 0}
-                          <p class="text-xs text-gray-500">
+                          <p class="text-xs text-muted-foreground">
                             {result.relays.join(', ')}
                           </p>
                         {/if}
@@ -582,8 +531,8 @@
                 {/each}
               </ul>
             </div>
-          {:else if searchQuery.length >= 3 && noSearchResults}
-            <div class="bg-white rounded-md shadow-sm mt-4 p-4 text-center text-gray-600">
+          {:else if !searching && searchQuery.length >= 3 && noSearchResults}
+            <div class="bg-surface rounded-md shadow-sm mt-4 p-4 text-center text-muted-foreground">
               No users found matching "{searchQuery}"
             </div>
           {/if}
@@ -597,23 +546,23 @@
                   <button
                     type="button"
                     on:click={() => showRemoveAllConfirm = true}
-                    class="text-sm text-red-600 hover:text-red-800"
+                    class="text-sm text-danger hover:text-danger"
                   >
                     Remove All
                   </button>
                 {/if}
               </div>
               {#if !entriesValid}
-                <p class="text-sm text-red-600">Add at least one user to your list</p>
+                <p class="text-sm text-danger">Add at least one user to your list</p>
               {/if}
             </div>
             
             <!-- Remove All Confirmation Modal -->
             {#if showRemoveAllConfirm}
               <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                <div class="bg-white rounded-lg p-6 max-w-md w-full">
-                  <h3 class="text-xl font-bold text-gray-900 mb-4">Remove All Users</h3>
-                  <p class="text-gray-700 mb-6">
+                <div class="bg-surface rounded-lg p-6 max-w-md w-full">
+                  <h3 class="text-xl font-bold text-foreground mb-4">Remove All Users</h3>
+                  <p class="text-body mb-6">
                     Are you sure you want to remove all users from your list? This action cannot be undone.
                   </p>
                   <div class="flex justify-end space-x-3">
@@ -635,30 +584,25 @@
             {/if}
             
             {#if selectedEntries.length === 0}
-              <div class="bg-gray-50 border border-gray-200 rounded-md p-4 text-center text-gray-500">
+              <div class="bg-subtle border border-line rounded-md p-4 text-center text-muted-foreground">
                 No users selected yet. Search for users to add them to your list.
               </div>
             {:else}
-              <ul class="border border-gray-200 rounded-md divide-y divide-gray-200">
+              <ul class="border border-line rounded-md divide-y divide-line">
                 {#each selectedEntries as entry, i}
                   <li class="p-3 flex items-center justify-between">
                     <div class="flex items-center">
-                      <ProfileImage 
-                        src={entry.picture} 
-                        alt={entry.name || 'User'} 
-                        size="md" 
-                        classes="mr-3"
-                      />
                       <div>
-                        <p class="font-medium">{entry.name || 'Unknown User'}</p>
+                        {#if runtime}<div class="flex items-center gap-2"><ReactiveProfile {runtime} pubkey={entry.pubkey} showName /></div>
+                        {:else}<p class="font-medium">{entry.name || 'Unknown User'}</p>{/if}
                         {#if entry.nip05}
-                          <p class="text-xs text-gray-500">
+                          <p class="text-xs text-muted-foreground">
                             {entry.nip05}
                           </p>
                         {/if}
                         <PublicKeyDisplay pubkey={entry.pubkey} />
                         {#if entry.relay}
-                          <p class="text-xs text-gray-500">
+                          <p class="text-xs text-muted-foreground">
                             {entry.relay}
                           </p>
                         {/if}
@@ -670,8 +614,9 @@
                           type="button"
                           on:click={() => moveEntryUp(i)}
                           disabled={i === 0}
-                          class="text-gray-500 hover:text-purple-600 disabled:opacity-30 disabled:hover:text-gray-500 focus:outline-none"
+                          class="text-muted-foreground hover:text-accent disabled:opacity-30 disabled:hover:text-muted-foreground focus:outline-none"
                           title="Move up"
+                          aria-label="Move up"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                             <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
@@ -681,8 +626,9 @@
                           type="button"
                           on:click={() => moveEntryDown(i)}
                           disabled={i === selectedEntries.length - 1}
-                          class="text-gray-500 hover:text-purple-600 disabled:opacity-30 disabled:hover:text-gray-500 focus:outline-none"
+                          class="text-muted-foreground hover:text-accent disabled:opacity-30 disabled:hover:text-muted-foreground focus:outline-none"
                           title="Move down"
+                          aria-label="Move down"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                             <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 011.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
@@ -692,7 +638,7 @@
                       <button
                         type="button"
                         on:click={() => removeEntry(i)}
-                        class="text-sm text-red-600 hover:text-red-800"
+                        class="text-sm text-danger hover:text-danger"
                       >
                         Remove
                       </button>
@@ -719,7 +665,7 @@
           
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || uploading}
             class="btn btn-primary px-6 py-3 text-base {submitting ? 'opacity-70' : ''}"
           >
             {submitting ? (editMode ? 'Updating...' : 'Publishing...') : (editMode ? 'Update' : 'Publish') + ' Follow Pack'}
@@ -728,4 +674,4 @@
       </form>
     {/if}
   </div>
-</div> 
+</div>

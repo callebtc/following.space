@@ -2,8 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-    @apply bg-gray-50 text-gray-900;
+@layer base {
+    :root {
+        color-scheme: light;
+        --color-canvas: 249 250 251;
+        --color-surface: 255 255 255;
+        --color-subtle: 249 250 251;
+        --color-muted: 243 244 246;
+        --color-placeholder: 229 231 235;
+        --color-foreground: 17 24 39;
+        --color-body: 55 65 81;
+        --color-muted-foreground: 75 85 99;
+        --color-line: 229 231 235;
+        --color-strong: 156 163 175;
+        --color-accent: 126 34 206;
+        --color-info: 29 78 216;
+        --color-danger: 185 28 28;
+        --color-success: 21 128 61;
+        --color-warning: 146 64 14;
+        --color-accent-soft: 250 245 255;
+        --color-info-soft: 239 246 255;
+        --color-danger-soft: 254 242 242;
+        --color-success-soft: 240 253 244;
+        --color-warning-soft: 255 251 235;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            color-scheme: dark;
+            --color-canvas: 17 24 39;
+            --color-surface: 31 41 55;
+            --color-subtle: 17 24 39;
+            --color-muted: 55 65 81;
+            --color-placeholder: 75 85 99;
+            --color-foreground: 243 244 246;
+            --color-body: 229 231 235;
+            --color-muted-foreground: 156 163 175;
+            --color-line: 55 65 81;
+            --color-strong: 107 114 128;
+            --color-accent: 216 180 254;
+            --color-info: 147 197 253;
+            --color-danger: 252 165 165;
+            --color-success: 134 239 172;
+            --color-warning: 252 211 77;
+            --color-accent-soft: 59 28 86;
+            --color-info-soft: 23 37 84;
+            --color-danger-soft: 69 26 26;
+            --color-success-soft: 20 53 38;
+            --color-warning-soft: 66 43 16;
+        }
+    }
+
+    body {
+        @apply bg-canvas text-foreground;
+    }
+
+    *, ::before, ::after {
+        @apply border-line;
+    }
+
+    input, textarea, select {
+        @apply bg-surface text-foreground placeholder:text-muted-foreground;
+    }
+
+    :focus-visible {
+        @apply outline outline-2 outline-offset-2 outline-accent;
+    }
 }
 
 
@@ -16,7 +80,7 @@ img {
 }
 
 .btn {
-    @apply inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2;
+    @apply inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface;
 }
 
 .btn-primary {
@@ -24,13 +88,18 @@ img {
 }
 
 .btn-secondary {
-    @apply bg-white text-gray-700 border-gray-300 hover:bg-gray-50 focus:ring-purple-500;
+    @apply bg-surface text-body border-strong hover:bg-muted focus:ring-purple-500;
 }
 
 .btn-outline {
-    @apply bg-transparent border border-gray-300 text-gray-700 hover:bg-gray-50;
+    @apply bg-transparent border border-strong text-body hover:bg-muted;
 }
 
+.btn-error {
+    @apply bg-red-700 text-white hover:bg-red-800 focus:ring-red-500;
+}
+
+.btn:disabled,
 .btn-disabled {
     @apply opacity-50 cursor-not-allowed;
 }
@@ -42,7 +111,7 @@ img {
 }
 
 /* Apply word breaking to links too */
-:global(a) {
+a {
     word-wrap: break-word;
     overflow-wrap: break-word;
     word-break: break-word;

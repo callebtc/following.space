@@ -35,10 +35,10 @@
 <button 
   type="button"
   on:click={copyToClipboard}
-  class="text-xs text-gray-500 hover:text-gray-700 transition"
+  class="text-xs text-muted-foreground hover:text-body transition"
 >
   {#if copying}
-    <span class="text-green-600">Copied!</span>
+    <span class="text-success">Copied!</span>
   {:else}
     {abbreviated || `${pubkey.substring(0, 8)}...${pubkey.substring(pubkey.length - 8)}`}
   {/if}

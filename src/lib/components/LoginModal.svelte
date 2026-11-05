@@ -1,530 +1,185 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { 
-    loginWithExtension, 
-    loginWithNsec, 
-    loginWithBunker,
-    loginWithNostrConnect,
-    checkNip07Extension,
-    createNostrConnectSigner,
-    cancelNostrConnectAttempt,
-    connectStatus
-  } from '$lib/stores/login';
+  import { onMount, onDestroy } from 'svelte';
+  import { loginWithExtension, loginWithNsec, loginWithBunker, loginWithNostrConnect,
+    checkNip07Extension, createNostrConnectSigner, cancelNostrConnectAttempt, connectStatus, authNotice } from '$lib/stores/login';
   import { loadUser } from '$lib/stores/user';
   import QRCode from 'qrcode';
-
   export let isOpen = false;
   export let onClose = () => {};
   export let onLogin = () => {};
-
   let activeTab = 'extension';
   let nsec = '';
   let bunkerUrl = '';
   let isLoading = false;
   let isNip07Available = false;
-  let showManualBunkerInput = false;
-  let bunkerError = '';
-  let nostrConnectRelay = 'wss://relay.primal.net';
-  // NostrConnect state
+  let isBunkerLoading = false;
+  let loginError = '';
+  let nostrConnectRelay = '';
   let nostrConnectUrl = '';
   let qrCodeDataUrl = '';
   let copySuccess = false;
   let showRelayInput = false;
-  
-  // Subscribe to connection status changes
+  let attempt = 0;
   $: connectionStatus = $connectStatus.status;
   $: connectionMessage = $connectStatus.message || '';
-  
-  // Validate nsec
-  $: isValidNsec = validateNsec(nsec);
-  
-  function validateNsec(nsecString: string): boolean {
-    // Basic validation: must start with nsec1 and be at least 6 chars
-    return nsecString.trim().startsWith('nsec1') && nsecString.trim().length >= 6;
-  }
+  $: isValidNsec = nsec.trim().startsWith('nsec1');
+  onMount(() => { void checkNip07Extension().then((available) => { isNip07Available = available; if (!available) activeTab = 'nsec'; }); });
+  onDestroy(cancelNostrConnect);
+  $: if (!isOpen) cancelNostrConnect();
+  $: if (isOpen && activeTab === 'bunker') void startNostrConnect();
 
-  // Check if NIP-07 extension is available
-  onMount(async () => {
-    isNip07Available = await checkNip07Extension();
-    // If NIP-07 is not available, default to NSEC tab
-    if (!isNip07Available) {
-      activeTab = 'nsec';
-    }
-  });
-
-  // Generate QR code when the URL changes
-  $: {
-    if (nostrConnectUrl) {
-      generateQrCode(nostrConnectUrl);
-    }
-  }
-
-  async function generateQrCode(url: string) {
-    try {
-      qrCodeDataUrl = await QRCode.toDataURL(url, {
-        width: 320,
-        margin: 3,
-        color: {
-          dark: '#000',
-          light: '#fff'
-        }
-      });
-    } catch (error) {
-      console.error('Error generating QR code:', error);
-    }
-  }
-  
   async function pasteFromClipboard(target: 'nsec' | 'bunker') {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (target === 'nsec') {
-        nsec = text;
-      } else {
-        bunkerUrl = text;
-      }
-    } catch (error) {
-      console.error('Failed to read clipboard:', error);
-    }
+    try { const text = await navigator.clipboard.readText(); if (target === 'nsec') nsec = text; else bunkerUrl = text; }
+    catch { loginError = 'Clipboard access was denied. You can paste into the field.'; }
   }
-
-  async function startNostrConnect() {
-    try {
-      isLoading = true;
-      
-      // Update connection status to waiting
-      connectStatus.set({
-        status: 'waiting',
-        message: 'Waiting for bunker to connect...',
-      });
-      
-      const signer = await createNostrConnectSigner(nostrConnectRelay);
-      if (!signer || !signer.nostrConnectUri) {
-        throw new Error('Failed to create NostrConnect signer');
-      }
-      
-      console.log('NostrConnect signer created', signer.nostrConnectUri);
-      nostrConnectUrl = signer.nostrConnectUri;
-      
-      // Set up a timeout for 2 minutes (120000ms)
-      const timeoutPromise = new Promise<boolean>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error('Connection timeout. Please try again.'));
-        }, 120000);
-      });
-      
-      // Create a login promise
-      const loginPromise = loginWithNostrConnect(signer);
-      
-      // Race the login against the timeout
-      const success = await Promise.race([loginPromise, timeoutPromise]);
-      
-      if (success) {
-        // If login successful, load user and close modal
-        await loadUser();
-        onLogin();
-        onClose();
-      } else {
-        throw new Error('Failed to login with NostrConnect');
-      }
-    } catch (error) {
-      console.error('Error starting NostrConnect:', error);
-      
-      // Update connection status to error
-      connectStatus.set({
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Failed to connect'
-      });
-      
-      isLoading = false;
-    }
-  }
-
   function cancelNostrConnect() {
-    cancelNostrConnectAttempt();
-    nostrConnectUrl = '';
-    qrCodeDataUrl = '';
-    isLoading = false;
+    attempt++; cancelNostrConnectAttempt(); nostrConnectUrl = ''; qrCodeDataUrl = ''; isLoading = false; copySuccess = false;
   }
-
-  function copyToClipboard() {
-    if (navigator.clipboard && nostrConnectUrl) {
-      navigator.clipboard.writeText(nostrConnectUrl).then(
-        () => {
-          copySuccess = true;
-          setTimeout(() => {
-            copySuccess = false;
-          }, 2000);
-        },
-        (err) => {
-          console.error('Could not copy text: ', err);
-        }
-      );
-    }
-  }
-
-  async function handleExtensionLogin() {
-    isLoading = true;
+  function switchTab(tab: string) { cancelNostrConnect(); activeTab = tab; loginError = ''; nsec = ''; showRelayInput = false; }
+  async function complete() { await loadUser(); nsec = ''; bunkerUrl = ''; onLogin(); onClose(); }
+  async function startNostrConnect() {
+    cancelNostrConnect(); const token = ++attempt; isLoading = true; loginError = '';
     try {
-      const success = await loginWithExtension();
-      if (success) {
-        await loadUser();
-        onLogin();
-        onClose();
-      }
+      const signer = await createNostrConnectSigner(nostrConnectRelay);
+      if (token !== attempt) { cancelNostrConnectAttempt(); return; }
+      nostrConnectUrl = signer.nostrConnectUri;
+      const qrCode = await QRCode.toDataURL(nostrConnectUrl, { width: 320, margin: 3, color: { dark: '#000000', light: '#ffffff' } });
+      if (token !== attempt) return;
+      qrCodeDataUrl = qrCode;
+      if (await loginWithNostrConnect(signer) && token === attempt) await complete();
     } catch (error) {
-      console.error('Extension login failed:', error);
-    } finally {
-      isLoading = false;
-    }
+      if (token === attempt) connectStatus.set({ status: 'error', message: error instanceof Error ? error.message : 'Connection failed' });
+    } finally { if (token === attempt) isLoading = false; }
   }
-
-  async function handleNsecLogin() {
-    if (!nsec.trim()) return;
-    isLoading = true;
-    
-    try {
-      const success = await loginWithNsec(nsec);
-      if (success) {
-        await loadUser();
-        onLogin();
-        onClose();
-      }
-    } catch (error) {
-      console.error('Nsec login failed:', error);
-    } finally {
-      isLoading = false;
-    }
+  async function runLogin(run: () => Promise<boolean>) {
+    cancelNostrConnect(); const token = ++attempt; isLoading = true; loginError = '';
+    try { if (await run() && token === attempt) await complete(); }
+    catch (error) { if (token === attempt) loginError = error instanceof Error ? error.message : 'Login failed'; }
+    finally { if (token === attempt) isLoading = false; }
   }
-
+  function handleExtensionLogin() { return runLogin(loginWithExtension); }
+  function handleNsecLogin() { return runLogin(() => loginWithNsec(nsec)); }
   async function handleBunkerLogin() {
-    if (!bunkerUrl.trim() || !bunkerUrl.startsWith('bunker://')) return;
-    isLoading = true;
-    bunkerError = '';
-    
-    try {
-      const success = await loginWithBunker(bunkerUrl);
-      if (success) {
-        await loadUser();
-        onLogin();
-        onClose();
-      } 
-    } catch (error) {
-      console.error('Bunker login failed:', error);
-      bunkerError = error instanceof Error ? error.message : `Bunker login failed: ${error}`;
-    } finally {
-      isLoading = false;
-    }
+    if (!bunkerUrl.trim().startsWith('bunker://') || isBunkerLoading) return;
+    isBunkerLoading = true;
+    try { await runLogin(() => loginWithBunker(bunkerUrl)); }
+    finally { isBunkerLoading = false; }
   }
-
-  function handleFileUpload(event: Event) {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const content = e.target?.result as string;
-      nsec = content.trim();
-    };
-    reader.readAsText(file);
+  function closeModal() { cancelNostrConnect(); nsec = ''; bunkerUrl = ''; loginError = ''; showRelayInput = false; onClose(); }
+  function openDialog(node: HTMLDialogElement) {
+    const previous = document.activeElement;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    node.showModal();
+    return { destroy() { document.body.style.overflow = overflow; if (previous instanceof HTMLElement) previous.focus(); } };
   }
-  
-  function toggleManualBunkerInput() {
-    showManualBunkerInput = !showManualBunkerInput;
-  }
-  
-  // Clean up when the modal is closed
-  $: if (!isOpen) {
-    cancelNostrConnect();
+  async function copyToClipboard() {
+    try { await navigator.clipboard.writeText(nostrConnectUrl); copySuccess = true; }
+    catch { loginError = 'Could not copy the connection link'; }
   }
 </script>
 
 {#if isOpen}
-<div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-  <div class="bg-white dark:bg-gray-800 rounded-2xl max-w-md w-full p-0 overflow-hidden">
-    <!-- Header -->
-    <div class="px-6 pt-6 pb-0 relative">
-      <h2 class="text-xl text-gray-800 dark:text-gray-300 font-semibold text-center">Log in</h2>
-      <p class="text-center text-gray-600 dark:text-gray-400 mt-2">
-        Log in with your Nostr account using your preferred method
-      </p>
-    </div>
-
-    <!-- Content -->
-    <div class="px-6 py-8 space-y-6">
-      <!-- Tabs -->
-      <div class="w-full">
-        <!-- Tab Navigation -->
-        <div class="flex border-b border-gray-200 dark:border-gray-700 mb-6">
-          {#if isNip07Available}
-          <button 
-            class="flex-1 py-2 font-medium text-sm {activeTab === 'extension' ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-500 dark:border-blue-500' : 'text-gray-500 dark:text-gray-400'}"
-            on:click={() => activeTab = 'extension'}
-          >
-            Extension
-          </button>
-          {/if}
-          <button 
-            class="flex-1 py-2 font-medium text-sm {activeTab === 'nsec' ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-500 dark:border-blue-500' : 'text-gray-500 dark:text-gray-400'}"
-            on:click={() => activeTab = 'nsec'}
-          >
-            Nsec
-          </button>
-          <button 
-            class="flex-1 py-2 font-medium text-sm {activeTab === 'bunker' ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-500 dark:border-blue-500' : 'text-gray-500 dark:text-gray-400'}"
-            on:click={() => activeTab = 'bunker'}
-          >
-            Bunker
-          </button>
+  <dialog use:openDialog on:cancel={(event) => { event.preventDefault(); closeModal(); }} on:click={(event) => { if (event.target === event.currentTarget) closeModal(); }} aria-labelledby="login-title" class="login-dialog bg-surface text-foreground">
+    <div class="login-layout">
+      <header class="login-header">
+        <div>
+          <h2 id="login-title">Log in</h2>
         </div>
+        <button class="close-button text-muted-foreground hover:bg-subtle" on:click={closeModal} aria-label="Close login">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
+        </button>
+      </header>
 
-        <!-- Tab Content -->
-        {#if activeTab === 'extension' && isNip07Available}
-          <div class="space-y-4">
-            <div class="text-center p-4 rounded-lg bg-gray-50 dark:bg-gray-700">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto mb-3 text-blue-600 dark:text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              <p class="text-sm text-gray-600 dark:text-gray-300 mb-4">
-                Login with one click using the browser extension
-              </p>
-              <button
-                class="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg dark:bg-blue-500 dark:hover:bg-blue-600"
-                on:click={handleExtensionLogin}
-                disabled={isLoading}
-              >
-                {isLoading ? 'Logging in...' : 'Login with Extension'}
-              </button>
+      <nav class="methods border-line" aria-label="Login method">
+        {#if isNip07Available}<button class:active={activeTab === 'extension'} aria-pressed={activeTab === 'extension'} on:click={() => switchTab('extension')}>Extension</button>{/if}
+        <button class:active={activeTab === 'nsec'} aria-pressed={activeTab === 'nsec'} on:click={() => switchTab('nsec')}>Private key</button>
+        <button class:active={activeTab === 'bunker'} aria-pressed={activeTab === 'bunker'} on:click={() => switchTab('bunker')}>Remote signer</button>
+      </nav>
+
+      <section class="login-content" aria-label="Selected login method">
+        {#if loginError || $authNotice}<p role="alert" class="text-danger small">{loginError || $authNotice}</p>{/if}
+        {#if activeTab === 'extension'}
+          <button class="primary" on:click={handleExtensionLogin} disabled={isLoading}>{isLoading ? 'Waiting for extension…' : 'Login with Extension'}</button>
+        {:else if activeTab === 'nsec'}
+          <form on:submit|preventDefault={handleNsecLogin} class="flow">
+            <label for="nsec">Private key</label>
+            <div class="input-row border-strong">
+              <input id="nsec" type="password" bind:value={nsec} placeholder="nsec1..." autocomplete="off" spellcheck="false" class="bg-surface" />
+              <button type="button" class="text-info" on:click={() => pasteFromClipboard('nsec')} aria-label="Paste private key">Paste</button>
             </div>
-          </div>
-        {/if}
-
-        {#if activeTab === 'nsec'}
-          <div class="space-y-4">
-            <div class="space-y-2 text-center p-4 rounded-lg bg-gray-50 dark:bg-gray-700">
-              <label for="nsec" class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Enter your nsec
-              </label>
-              <div class="relative">
-                <input
-                  id="nsec"
-                  type="password"
-                  bind:value={nsec}
-                  class="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white pr-10"
-                  placeholder="nsec1..."
-                />
-                <button 
-                  class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
-                  on:click={() => pasteFromClipboard('nsec')}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                    <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-                  </svg>
-                </button>
+            <p class="text-muted-foreground fine">Session only. Only enter your key on a site you trust.</p>
+            <button type="submit" class="primary" disabled={isLoading || !isValidNsec}>{isLoading ? 'Verifying…' : 'Login with Nsec'}</button>
+          </form>
+        {:else if activeTab === 'bunker'}
+          <div class="flow signer-connect">
+            {#if connectionStatus === 'error'}
+              <p role="alert" class="text-danger small">{connectionMessage || 'Could not connect to your signer.'}</p>
+              <button class="primary" on:click={startNostrConnect}>Try again</button>
+            {:else if qrCodeDataUrl && nostrConnectUrl}
+              <a class="qr" href={nostrConnectUrl} aria-label="Open in signer"><img src={qrCodeDataUrl} alt="Nostr Connect QR code" width="272" height="272" /></a>
+              <a class="primary" href={nostrConnectUrl}>Open in signer</a>
+              <div class="inline-actions">
+                <button class="text-info" on:click={copyToClipboard}>{copySuccess ? 'Link copied' : 'Copy link'}</button>
+                <button class="text-muted-foreground" on:click={() => showRelayInput = !showRelayInput} aria-expanded={showRelayInput}>Change relay</button>
               </div>
-              <div class="text-xs text-red-500 dark:text-red-400">
-                Warning: This a dangerous login method. Never enter your nsec in an untrusted application.
-                Use an alternative login method if possible.
-              </div>
-              
-              <button
-                class="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg dark:bg-blue-500 dark:hover:bg-blue-600 mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
-                on:click={handleNsecLogin}
-                disabled={isLoading || !nsec.trim() || !isValidNsec}
-              >
-                {isLoading ? 'Verifying...' : 'Login with Nsec'}
-              </button>
-            </div>
-          </div>
-        {/if}
-
-        {#if activeTab === 'bunker'}
-          <div class="space-y-4">
-            {#if !nostrConnectUrl}
-              {#if !showManualBunkerInput}
-                <div class="text-center p-4 rounded-lg bg-gray-50 dark:bg-gray-700">
-                  <p class="text-sm text-gray-600 dark:text-gray-300 mb-4">
-                    Connect securely with your Nostr bunker app
-                  </p>
-                  
-                  <button
-                    class="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg dark:bg-blue-500 dark:hover:bg-blue-600 mb-3"
-                    on:click={startNostrConnect}
-                    disabled={isLoading}
-                  >
-                    {isLoading ? 'Generating...' : 'Connect with QR Code'}
-                  </button>
-                  
-                  <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">or</p>
-                  
-                  <button
-                    class="w-full py-2 px-4 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={toggleManualBunkerInput}
-                  >
-                    Enter Bunker URL Manually
-                  </button>
-                </div>
-              {:else}
-                <div class="space-y-2 text-center p-4 rounded-lg bg-gray-50 dark:bg-gray-700">
-                  <label for="bunkerUri" class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Bunker URI
-                  </label>
-                  <div class="relative">
-                    <input
-                      id="bunkerUri"
-                      type="text"
-                      bind:value={bunkerUrl}
-                      class="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white pr-10"
-                      placeholder="bunker://"
-                    />
-                    <button 
-                      class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
-                      on:click={() => pasteFromClipboard('bunker')}
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                        <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-                      </svg>
-                    </button>
-                  </div>
-                  {#if bunkerUrl && !bunkerUrl.startsWith('bunker://')}
-                    <p class="text-red-500 text-xs">URI must start with bunker://</p>
-                  {/if}
-                  {#if bunkerError}
-                    <p class="text-red-500 text-xs">
-                      {bunkerError}
-                    </p>
-                  {/if}
-
-                  <div class="flex space-x-2 mt-3 justify-center">
-                    <button
-                      class="py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md dark:bg-blue-500 dark:hover:bg-blue-600 flex-1"
-                      on:click={handleBunkerLogin}
-                      disabled={isLoading || !bunkerUrl.trim() || !bunkerUrl.startsWith('bunker://')}
-                    >
-                      {isLoading ? 'Connecting...' : 'Connect'}
-                    </button>
-                    
-                    <button
-                      class="py-2 px-3 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 font-medium rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 flex-1"
-                      on:click={toggleManualBunkerInput}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              {/if}
             {:else}
-              <div class="text-center p-4 rounded-lg bg-gray-50 dark:bg-gray-700 space-y-4">
-                <h3 class="font-medium text-gray-800 dark:text-gray-200">
-                  {#if connectionStatus === 'waiting'}
-                    Scan this QR code with your bunker app
-                  {:else if connectionStatus === 'connected'}
-                    Connected!
-                  {:else if connectionStatus === 'error'}
-                    Connection error
-                  {/if}
-                </h3>
-                
-                {#if connectionStatus === 'waiting'}
-                  {#if qrCodeDataUrl}
-                    <div class="flex justify-center">
-                      <a href={nostrConnectUrl} target="_blank">
-                        <img loading="lazy" src={qrCodeDataUrl} alt="Nostr Connect QR Code" class="rounded-lg border border-gray-300 dark:border-gray-600"/>
-                      </a>
-                    </div>
-                    
-                    <div class="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                      {connectionMessage}
-                    </div>
-                    
-                    {#if showRelayInput}
-                      <div class="mt-2 mb-2 mx-4">
-                        <div class="flex space-x-2">
-                          <input
-                            type="text"
-                            bind:value={nostrConnectRelay}
-                            class="flex-1 text-xs p-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                            placeholder="wss://relay.example.com"
-                          />
-                          <button
-                            class="py-1 px-2 text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium rounded dark:bg-blue-500 dark:hover:bg-blue-600"
-                            on:click={() => {
-                              showRelayInput = false;
-                              cancelNostrConnect();
-                              startNostrConnect();
-                            }}
-                          >
-                            Update
-                          </button>
-                        </div>
-                      </div>
-                    {/if}
-
-                    <div class="flex space-x-2 justify-center">
-                      <button
-                        class="py-1 px-3 text-xs border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
-                        on:click={copyToClipboard}
-                      >
-                        {#if copySuccess}
-                          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                          </svg>
-                          Copied!
-                        {:else}
-                          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                            <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-                          </svg>
-                          Copy URL
-                        {/if}
-                      </button>
-                      
-                      <button
-                        class="py-1 px-3 text-xs border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
-                        on:click={() => showRelayInput = !showRelayInput}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
-                        </svg>
-                        Edit
-                      </button>
-                      
-                      <button
-                        class="py-1 px-3 text-xs bg-red-600 hover:bg-red-700 text-white font-medium rounded-md dark:bg-red-500 dark:hover:bg-red-600 flex items-center"
-                        on:click={cancelNostrConnect}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1" viewBox="0 0 20 20" fill="currentColor">
-                          <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
-                        </svg>
-                        Cancel
-                      </button>
-                    </div>
-                  {/if}
-                {:else if connectionStatus === 'error'}
-                  <div class="text-red-500 dark:text-red-400 mb-3">
-                    {connectionMessage}
-                  </div>
-                  <button
-                    class="py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg dark:bg-blue-500 dark:hover:bg-blue-600"
-                    on:click={cancelNostrConnect}
-                  >
-                    Try Again
-                  </button>
-                {/if}
-              </div>
+              <p class="text-muted-foreground small qr-placeholder" role="status">{isBunkerLoading ? 'Connecting to bunker…' : 'Preparing QR code…'}</p>
+              {#if !isLoading && !isBunkerLoading}<button class="text-info" on:click={startNostrConnect}>Show QR code</button>{/if}
             {/if}
           </div>
+          <form on:submit|preventDefault={handleBunkerLogin} class="flow bunker-form border-line">
+            <label for="bunkerUri">Or use a bunker URI</label>
+            <div class="input-row border-strong">
+              <input id="bunkerUri" type="text" bind:value={bunkerUrl} placeholder="bunker://" autocomplete="off" spellcheck="false" class="bg-surface" />
+              <button type="button" class="text-info" on:click={() => pasteFromClipboard('bunker')} aria-label="Paste bunker URI">Paste</button>
+              <button type="submit" class="text-info" disabled={isBunkerLoading || !bunkerUrl.trim().startsWith('bunker://')}>{isBunkerLoading ? 'Connecting…' : 'Connect'}</button>
+            </div>
+            {#if bunkerUrl && !bunkerUrl.trim().startsWith('bunker://')}<p class="text-danger fine">URI must start with bunker://</p>{/if}
+          </form>
+          {#if showRelayInput}
+            <form class="flow relay-form border-line" on:submit|preventDefault={() => { showRelayInput = false; void startNostrConnect(); }}>
+              <label for="signer-relay">Signer relay</label>
+              <div class="input-row border-strong">
+                <input id="signer-relay" type="url" bind:value={nostrConnectRelay} placeholder="wss://relay.example.com" class="bg-surface" />
+                <button type="submit" class="text-info">Update</button>
+              </div>
+            </form>
+          {/if}
         {/if}
-      </div>
-
-      <!-- Close button -->
-      <div class="text-center">
-        <button on:click={onClose} class="text-gray-600 dark:text-gray-400 hover:underline font-medium text-sm">
-          Cancel
-        </button>
-      </div>
+      </section>
     </div>
-  </div>
-</div>
-{/if} 
+  </dialog>
+{/if}
+
+<style>
+  .login-dialog { width: min(480px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 0; border-radius: 16px; box-shadow: 0 24px 80px #0004; }
+  .login-dialog::backdrop { background: #0008; backdrop-filter: blur(4px); }
+  .login-layout { padding: 22px 24px 24px; }
+  .login-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  h2 { font-size: 22px; font-weight: 650; letter-spacing: -.025em; line-height: 1.3; }
+  .close-button { display: grid; place-items: center; padding: 6px; border-radius: 6px; margin: -4px -6px 0 0; }
+  .methods { display: flex; gap: 22px; border-bottom-width: 1px; margin-top: 20px; }
+  .methods button { font-size: 13px; padding: 0 0 11px; opacity: .6; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+  .methods button.active { opacity: 1; border-bottom-color: currentColor; font-weight: 600; }
+  .login-content { display: flex; flex-direction: column; gap: 14px; padding-top: 20px; }
+  .flow { display: flex; flex-direction: column; gap: 12px; }
+  label { font-size: 13px; font-weight: 600; margin-bottom: -5px; }
+  .input-row { display: flex; align-items: center; border-width: 1px; border-radius: 7px; overflow: hidden; }
+  .input-row:focus-within { outline: 2px solid #3b82f6; outline-offset: 2px; }
+  input { min-width: 0; width: 100%; padding: 10px 12px; font-size: 14px; outline: none; }
+  .input-row button { padding: 10px 12px; font-size: 12px; flex-shrink: 0; }
+  .small { font-size: 14px; line-height: 1.5; }
+  .fine { font-size: 12px; line-height: 1.5; }
+  .primary { display: flex; justify-content: center; align-items: center; width: 100%; min-height: 42px; padding: 10px 14px; border-radius: 7px; background: #2563eb; color: white; font-size: 14px; font-weight: 600; text-decoration: none; }
+  .primary:hover { background: #1d4ed8; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:focus-visible, a:focus-visible { outline: 2px solid #3b82f6; outline-offset: 3px; }
+  .qr { align-self: center; }
+  .qr-placeholder { min-height: 272px; display: grid; place-items: center; }
+  .bunker-form { border-top-width: 1px; padding-top: 16px; }
+  .qr img { max-width: 100%; height: auto; }
+  .inline-actions { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; flex-wrap: wrap; }
+  .relay-form { border-top-width: 1px; padding-top: 16px; }
+  @media (max-width: 380px) { .login-layout { padding: 20px 18px; } .methods { gap: 16px; } }
+</style>

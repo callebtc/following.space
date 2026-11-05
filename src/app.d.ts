@@ -1,6 +1,9 @@
 // See https://kit.svelte.dev/docs/types#app
 // for information about these interfaces
 declare global {
+  interface Window {
+    nostr?: import('applesauce-signers').ISigner;
+  }
 	namespace App {
 		// interface Error {}
 		// interface Locals {}

@@ -1,10 +1,11 @@
 import { resolvePackLink } from '../../nostr/protocol/pack-link';
-import { normalizeRelays } from '../../nostr/relay-policy';
-import { Observable, Subscription, shareReplay, map } from 'rxjs';
+import { eventRelays, normalizeRelays } from '../../nostr/relay-policy';
+import { Observable, Subscription, shareReplay, map, combineLatest, of, from, fromEvent, firstValueFrom, takeUntil, defaultIfEmpty } from 'rxjs';
+import { loadOutboxRelays } from '../../nostr/outboxes';
 import { type FollowList, FOLLOW_LIST_KIND, parseFollowListEvent } from '../../nostr/protocol/follow-pack';
 import type { NostrRuntime } from '../../nostr/runtime';
 import { requestEvents } from '../../nostr/requests';
-import type { Filter, NostrEvent } from 'applesauce-core/helpers';
+import { kinds, type Filter, type NostrEvent } from 'applesauce-core/helpers';
 
 export interface PackDetailState { pack: FollowList | null; candidates: FollowList[]; loading: boolean; error?: string }
 export class AmbiguousPackError extends Error {
@@ -13,7 +14,7 @@ export class AmbiguousPackError extends Error {
 function packQuery(value: string, author?: string) {
   const { identifier, pubkey, relays } = resolvePackLink(value, author);
   const filter: Filter = { kinds: [FOLLOW_LIST_KIND], '#d': [identifier], ...(pubkey ? { authors: [pubkey] } : {}) };
-  const deletes: Filter = { kinds: [5], '#k': [String(FOLLOW_LIST_KIND)], ...(pubkey ? { authors: [pubkey] } : {}) };
+  const deletes: Filter = { kinds: [kinds.EventDeletion], '#k': [String(FOLLOW_LIST_KIND)], ...(pubkey ? { authors: [pubkey] } : {}) };
   return { pubkey, relays, filter, deletes };
 }
 function parsePacks(events: NostrEvent[]) {
@@ -25,7 +26,10 @@ async function refreshPack(runtime: NostrRuntime, query: ReturnType<typeof packQ
   const filters = [query.filter, query.deletes];
   await runtime.hydrate(filters).catch(() => {});
   signal?.throwIfAborted();
-  await requestEvents(runtime, filters, normalizeRelays([...runtime.relays, ...query.relays]), signal);
+  const discovery$ = query.pubkey ? from(loadOutboxRelays(runtime, query.pubkey)) : of([] as string[]);
+  const outboxes = await firstValueFrom(signal ? discovery$.pipe(takeUntil(fromEvent(signal, 'abort')), defaultIfEmpty([])) : discovery$);
+  signal?.throwIfAborted();
+  await requestEvents(runtime, filters, normalizeRelays([...runtime.relayPolicy.readRelays, ...query.relays, ...outboxes]), signal);
 }
 
 export function observePack(runtime: NostrRuntime, value: string, author?: string) {
@@ -51,7 +55,11 @@ export function observePack(runtime: NostrRuntime, value: string, author?: strin
     // underlying database can briefly contain both revisions before old cleanup.
     scope.add(runtime.eventStore.timeline(filter).subscribe((events) => { current = events; emit(); }));
     const boundary = Math.floor(Date.now() / 1000) - 60;
-    scope.add(runtime.pool.subscription(runtime.relayPolicy.readRelays$.pipe(map((current) => normalizeRelays([...current, ...relays]))), [filter, deletes].map((f) => ({ ...f, since: boundary }))).subscribe({
+    const outboxes$ = pubkey ? runtime.eventStore.replaceable(kinds.RelayList, pubkey).pipe(map((event) => eventRelays(event, 'write'))) : of([] as string[]);
+    const targets$ = combineLatest([runtime.relayPolicy.readRelays$, outboxes$]).pipe(
+      map(([current, outboxes]) => normalizeRelays([...current, ...relays, ...outboxes]))
+    );
+    scope.add(runtime.pool.subscription(targets$, [filter, deletes].map((f) => ({ ...f, since: boundary }))).subscribe({
       next: (event) => runtime.eventStore.add(event), error: () => {}
     }));
     void refreshPack(runtime, location, controller.signal).catch((error) => {

@@ -19,6 +19,18 @@ describe('pack links', () => {
       relays: ['wss://example.com', 'wss://example.com/', 'https://example.com', 'ws://user:pass@example.com'] });
     expect(resolvePackLink(link).relays).toEqual(['wss://example.com/']);
   });
+  it('embeds bounded, normalized useful hints in generated URLs and shared addresses', () => {
+    const hints = ['https://invalid.example', 'wss://outbox.example', 'wss://outbox.example/',
+      'wss://seen.example', 'wss://third.example', 'wss://fourth.example'];
+    const expected = ['wss://outbox.example/', 'wss://seen.example/', 'wss://third.example/'];
+    expect(resolvePackLink(packHref(pack, hints).slice(3)).relays).toEqual(expected);
+    const copied = `nostr:${packNaddr(pack, hints)}`;
+    expect(resolvePackLink(copied.slice('nostr:'.length)).relays).toEqual(expected);
+  });
+  it('does not generate malformed NIP-19 TLVs from oversized relay URLs', () => {
+    expect(resolvePackLink(packNaddr(pack, ['wss://relay.example/' + 'x'.repeat(256), 'wss://useful.example'])).relays)
+      .toEqual(['wss://useful.example/']);
+  });
   it('retains authorless and naddr-prefixed legacy identifiers', () => {
     expect(resolvePackLink('garden').pubkey).toBeUndefined();
     expect(resolvePackLink('naddr1legacy').identifier).toBe('naddr1legacy');

@@ -1,10 +1,14 @@
 import { OptimisticEventVerifier } from 'applesauce-core';
-import { verifyEvent, type NostrEvent } from 'applesauce-core/helpers';
+import { kinds, verifyEvent, type NostrEvent } from 'applesauce-core/helpers';
+import { FOLLOW_LIST_KIND, LOOKUP_RELAY_LIST_KIND } from './protocol/kinds';
 
 type EvidenceStorage = { getItem(key: string): string | null; setItem(key: string, value: string): unknown };
 type WasmVerifier = { verifyEvent(event: NostrEvent): void };
 // These events control identity, routing, pack membership or deletion. Never sample them.
-const STRICT_KINDS = new Set([0, 3, 5, 10002, 10063, 10086, 24242, 39089]);
+const STRICT_KINDS = new Set<number>([
+  kinds.Metadata, kinds.Contacts, kinds.EventDeletion, kinds.RelayList,
+  kinds.BlossomServerList, LOOKUP_RELAY_LIST_KIND, kinds.BlobsAuth, FOLLOW_LIST_KIND
+]);
 
 export function createAppVerifier(storage?: EvidenceStorage, loadWasm: () => Promise<WasmVerifier> = async () => {
   const { initNostrWasm } = await import('nostr-wasm');

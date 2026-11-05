@@ -4,7 +4,8 @@ import { combineLatest, Observable, of, Subscription, switchMap, merge, map, dis
 import { normalizeRelays, eventRelays } from '../nostr/relay-policy';
 import { accountRefreshFailed } from '../nostr/account-refresh';
 import { observeAccountRelays } from '../nostr/account-relays';
-import { npubEncode } from 'applesauce-core/helpers';
+import { kinds, npubEncode } from 'applesauce-core/helpers';
+import { LOOKUP_RELAY_LIST_KIND } from '../nostr/protocol/kinds';
 import { accounts } from '../nostr/accounts';
 import { parseProfile } from '../nostr/protocol/profile';
 import { initializeSigner } from './login';
@@ -44,7 +45,7 @@ function observeUser(runtime: Awaited<ReturnType<typeof getNostrRuntime>>) {
       const pubkey = account.pubkey;
       scope.add(observeAccountRelays(runtime, pubkey).subscribe());
       scope.add(combineLatest([
-        runtime.eventStore.replaceable(0, pubkey), runtime.eventStore.replaceable(3, pubkey), runtime.eventStore.replaceable(10002, pubkey)
+        runtime.eventStore.replaceable(kinds.Metadata, pubkey), runtime.eventStore.replaceable(kinds.Contacts, pubkey), runtime.eventStore.replaceable(kinds.RelayList, pubkey)
       ]).subscribe(([profile, contacts, mailboxes]) => {
         if (profile || contacts) userWarning.set('');
         const content = parseProfile(profile);
@@ -53,11 +54,11 @@ function observeUser(runtime: Awaited<ReturnType<typeof getNostrRuntime>>) {
           following: new Set(contacts?.tags.filter((tag) => tag[0] === 'p' && /^[0-9a-f]{64}$/i.test(tag[1] || '')).map((tag) => tag[1]) ?? []),
           relays: new Set(mailboxes ? eventRelays(mailboxes, 'write') : []) });
       }));
-      const filter = { kinds: [0, 3], authors: [pubkey] };
+      const filter = { kinds: [kinds.Metadata, kinds.Contacts], authors: [pubkey] };
       void runtime.hydrate([filter]).catch(() => {}).then(() => {
         if (scope.closed) return;
         scope.add(combineLatest([
-          runtime.relayPolicy.lookupRelays$, runtime.eventStore.replaceable(10002, pubkey)
+          runtime.relayPolicy.lookupRelays$, runtime.eventStore.replaceable(kinds.RelayList, pubkey)
         ]).pipe(
           map(([lookup, mailboxes]) => normalizeRelays([...runtime.relays, ...lookup, ...(mailboxes ? eventRelays(mailboxes, 'write') : [])])),
           distinctUntilChanged((a, b) => a.join('\n') === b.join('\n')),
@@ -71,7 +72,7 @@ function observeUser(runtime: Awaited<ReturnType<typeof getNostrRuntime>>) {
                 if (!status.done) return;
                 userWarning.set(!responded && !runtime.eventStore.getTimeline(filter).length && accountRefreshFailed(status) ? failedMessage : '');
               }), catchError(() => { if (!responded && !runtime.eventStore.getTimeline(filter).length) userWarning.set(failedMessage); return EMPTY; })),
-              runtime.pool.subscription(relays, { ...filter, kinds: [0, 3, 10002, 10086], since: Math.floor(Date.now() / 1000) - 60 }).pipe(
+              runtime.pool.subscription(relays, { ...filter, kinds: [kinds.Metadata, kinds.Contacts, kinds.RelayList, LOOKUP_RELAY_LIST_KIND], since: Math.floor(Date.now() / 1000) - 60 }).pipe(
                 map((event) => { responded = true; runtime.eventStore.add(event); userWarning.set(''); }),
                 // RelayGroup isolates individual failures; keep sync and relay-setting changes alive if the live group fails.
                 catchError(() => EMPTY)

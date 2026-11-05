@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises';
 import type { LookupAddress } from 'node:dns';
 import type { FollowList } from '../../nostr/protocol/follow-pack';
 import path from 'node:path';
+import { APP_NAME } from '../../constants';
 let fontsReady = false;
 
 async function remoteImage(value: string, signal: AbortSignal) {
@@ -58,6 +59,6 @@ export async function renderPreview(pack: FollowList, pictures: string[], signal
   }
   lines.push(line);
   lines.slice(0, 2).forEach((text, index) => ctx.fillText(text.trim(), 600, 400 + index * 80, 1080));
-  ctx.font = '32px Manrope'; ctx.fillText(`${pack.entries.length} people · following.space`, 600, 570);
+  ctx.font = '32px Manrope'; ctx.fillText(`${pack.entries.length} people · ${APP_NAME}`, 600, 570);
   return canvas.toBuffer('image/png');
 }

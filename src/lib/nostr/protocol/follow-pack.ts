@@ -1,3 +1,6 @@
+import { FOLLOW_LIST_KIND } from './kinds';
+export { FOLLOW_LIST_KIND } from './kinds';
+
 /** Plain protocol input keeps parsing independent of clients and UI frameworks. */
 export interface PackEvent {
     id: string;
@@ -7,9 +10,6 @@ export interface PackEvent {
     tags: string[][];
     content: string;
 }
-
-// The constant for our custom follow list event kind (replaceable)
-export const FOLLOW_LIST_KIND = 39089;
 
 export interface FollowListEntry {
     pubkey: string;

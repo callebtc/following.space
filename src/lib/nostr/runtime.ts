@@ -6,6 +6,9 @@ import { APP_RELAYS, LOOKUP_RELAYS, normalizeRelays, createRelayPolicy } from '.
 import { normalizeLookupRelays } from './lookup-relays';
 import { AppEventStore } from './event-store';
 
+const APP_RELAYS_STORAGE_KEY = 'following.space.app-relays';
+const LOOKUP_RELAYS_STORAGE_KEY = 'following.space.lookup-relays';
+
 export interface EventCache {
   read(filters: Filter[]): Promise<NostrEvent[]>;
   write(events: NostrEvent[]): Promise<void>;
@@ -17,14 +20,14 @@ export function createNostrRuntime(options: { cache: EventCache; relays?: string
   const pool = new RelayPool({ liveness });
   let relays = normalizeRelays(options.relays ?? APP_RELAYS);
   try {
-    const stored: unknown = JSON.parse(options.storage?.getItem('following.space.app-relays') ?? 'null');
+    const stored: unknown = JSON.parse(options.storage?.getItem(APP_RELAYS_STORAGE_KEY) ?? 'null');
     if (options.relays === undefined && Array.isArray(stored) && stored.length && stored.every((value) => typeof value === 'string')) {
       relays = normalizeLookupRelays(stored);
     }
   } catch { /* Use defaults when saved app relays are unavailable or invalid. */ }
   let initialLookup = normalizeRelays(LOOKUP_RELAYS);
   try {
-    const stored: unknown = JSON.parse(options.storage?.getItem('following.space.lookup-relays') ?? 'null');
+    const stored: unknown = JSON.parse(options.storage?.getItem(LOOKUP_RELAYS_STORAGE_KEY) ?? 'null');
     if (Array.isArray(stored) && stored.length && stored.every((value) => typeof value === 'string')) {
       const valid = normalizeRelays(stored);
       if (valid.length === stored.length) initialLookup = valid;
@@ -47,12 +50,12 @@ export function createNostrRuntime(options: { cache: EventCache; relays?: string
     setAppRelays(values: string[]) {
       if (!values.length) throw new Error('Keep at least one app relay.');
       const next = normalizeLookupRelays(values);
-      options.storage?.setItem('following.space.app-relays', JSON.stringify(next));
+      options.storage?.setItem(APP_RELAYS_STORAGE_KEY, JSON.stringify(next));
       relayPolicy.appRelays$.next(next);
     },
     setLookupRelays(values: string[]) {
       const next = normalizeLookupRelays(values);
-      options.storage?.setItem('following.space.lookup-relays', JSON.stringify(next));
+      options.storage?.setItem(LOOKUP_RELAYS_STORAGE_KEY, JSON.stringify(next));
       lookupRelays$.next(next);
     },
     cacheRequest: options.cache.read,

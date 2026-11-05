@@ -6,6 +6,9 @@ import { ExtensionSigner, NostrConnectSigner } from 'applesauce-signers';
 import type { IAccount } from 'applesauce-accounts';
 import { accounts } from '../nostr/accounts';
 import { normalizeRelays, SIGNER_RELAYS } from '../nostr/relay-policy';
+import { kinds } from 'applesauce-core/helpers';
+import { FOLLOW_LIST_KIND, LOOKUP_RELAY_LIST_KIND } from '../nostr/protocol/kinds';
+import { APP_NAME } from '../constants';
 
 export const authNotice = writable('');
 export const connectStatus = writable<{ status: 'idle' | 'waiting' | 'connected' | 'error'; message?: string }>({ status: 'idle' });
@@ -14,7 +17,10 @@ const SESSION = 'following:v2:remote-accounts';
 const ACTIVE = 'following:v2:active';
 const LEGACY = 'nostr-follow-list:login';
 // Contacts, deletions, account server/lookup lists, Blossom upload auth, and packs.
-const permissions = NostrConnectSigner.buildSigningPermissions([3, 5, 10063, 10086, 24242, 39089]);
+const permissions = NostrConnectSigner.buildSigningPermissions([
+  kinds.Contacts, kinds.EventDeletion, kinds.BlossomServerList,
+  LOOKUP_RELAY_LIST_KIND, kinds.BlobsAuth, FOLLOW_LIST_KIND
+]);
 let initialized: Promise<boolean> | undefined;
 let generation = 0;
 let pending: { signer: NostrConnectSigner; controller: AbortController } | undefined;
@@ -127,7 +133,7 @@ export async function createNostrConnectSigner(relay?: string) {
   const signer = new NostrConnectSigner({ relays, timeout: 15000 });
   pending = { signer, controller: new AbortController() };
   connectStatus.set({ status: 'waiting', message: 'Waiting for your signer…' });
-  return Object.assign(signer, { nostrConnectUri: signer.getNostrConnectURI({ name: 'following.space', url: location.origin, permissions }) });
+  return Object.assign(signer, { nostrConnectUri: signer.getNostrConnectURI({ name: APP_NAME, url: location.origin, permissions }) });
 }
 export async function loginWithNostrConnect(signer: NostrConnectSigner) {
   if (pending?.signer !== signer) throw new Error('Login cancelled');

@@ -1,5 +1,5 @@
 import { EventStore } from 'applesauce-core';
-import { verifyEvent, type NostrEvent } from 'applesauce-core/helpers';
+import { kinds, verifyEvent, type NostrEvent } from 'applesauce-core/helpers';
 import { Subject } from 'rxjs';
 
 /**
@@ -11,7 +11,7 @@ export class AppEventStore extends EventStore {
   private readonly deletionIds = new Set<string>();
 
   override add(event: NostrEvent, fromRelay?: string): NostrEvent | null {
-    if (event.kind !== 5) return super.add(event, fromRelay);
+    if (event.kind !== kinds.EventDeletion) return super.add(event, fromRelay);
     if (this.deletionIds.has(event.id)) return event;
     if (!(this.verifyEvent ?? verifyEvent)(event)) return null;
     this.deletionIds.add(event.id);

@@ -14,9 +14,11 @@ function setup() {
   const account = PrivateKeyAccount.fromKey(alice);
   runtime.eventStore.add(finalizeEvent({ kind: 10002, created_at: NOW, tags: [], content: '' }, alice));
   vi.spyOn(runtime.pool, 'request').mockReturnValue(of());
+  const network = vi.fn(() => of<NostrEvent | 'EOSE'>('EOSE'));
+  runtime.pool.add$.subscribe((relay) => vi.spyOn(relay, 'subscription').mockImplementation(network));
   const publish = vi.spyOn(runtime.pool, 'publish').mockResolvedValue([{ from: runtime.relays[0], ok: true }]);
   cleanup.push(() => runtime.dispose());
-  return { runtime, account, publish };
+  return { runtime, account, publish, network };
 }
 
 describe('pack writes', () => {
@@ -66,8 +68,8 @@ describe('contact transactions', () => {
     expect(snapshots.map((e) => e.id)).toEqual([previous.id, event.id]);
   });
   it('does not replace unknown contacts after a failed refresh', async () => {
-    const { runtime, account, publish } = setup();
-    vi.mocked(runtime.pool.request).mockReturnValue(throwError(() => new Error('offline')));
+    const { runtime, account, publish, network } = setup();
+    network.mockReturnValue(throwError(() => new Error('offline')));
     await expect(updateContacts(runtime, account, { add: ['a'.repeat(64)] }, () => true, () => {})).rejects.toThrow('offline');
     expect(publish).not.toHaveBeenCalled();
   });

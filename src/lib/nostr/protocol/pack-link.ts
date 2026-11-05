@@ -1,6 +1,22 @@
-import { decodePointer, naddrEncode } from 'applesauce-core/helpers';
+import { decodePointer, getSeenRelays, kinds, naddrEncode } from 'applesauce-core/helpers';
 import { FOLLOW_LIST_KIND, type FollowList } from './follow-pack';
-import { normalizeRelays } from '../relay-policy';
+import { eventRelays, normalizeRelays } from '../relay-policy';
+import type { NostrRuntime } from '../runtime';
+
+// NIP-19 hints are a small bootstrap, not an unbounded relay directory.
+function boundedHints(relays: string[]) {
+  return normalizeRelays(relays).filter((relay) => new TextEncoder().encode(relay).length <= 255).slice(0, 3);
+}
+
+/** Prefer relays that actually carried the event, then its author's known outboxes. */
+export function packRelayHints(runtime: NostrRuntime | undefined, pack: Pick<FollowList, 'pubkey'> & { eventId?: string }, hints: string[] = []) {
+  const event = pack.eventId ? runtime?.eventStore.getEvent(pack.eventId) : undefined;
+  return boundedHints([
+    ...(event ? getSeenRelays(event) ?? [] : []),
+    ...eventRelays(runtime?.eventStore.getReplaceable(kinds.RelayList, pack.pubkey), 'write'),
+    ...hints
+  ]);
+}
 
 export interface PackLocation { identifier: string; pubkey?: string; relays: string[] }
 
@@ -17,8 +33,8 @@ export function resolvePackLink(value: string, author?: string): PackLocation {
 }
 
 export function packNaddr(pack: Pick<FollowList, 'pubkey' | 'id'>, relays: string[] = []) {
-  return naddrEncode({ kind: FOLLOW_LIST_KIND, pubkey: pack.pubkey, identifier: pack.id, relays: normalizeRelays(relays) });
+  return naddrEncode({ kind: FOLLOW_LIST_KIND, pubkey: pack.pubkey, identifier: pack.id, relays: boundedHints(relays) });
 }
-export function packHref(pack: Pick<FollowList, 'pubkey' | 'id'>) {
-  return `/d/${packNaddr(pack)}`;
+export function packHref(pack: Pick<FollowList, 'pubkey' | 'id'>, relays: string[] = []) {
+  return `/d/${packNaddr(pack, relays)}`;
 }

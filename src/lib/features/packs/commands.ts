@@ -6,6 +6,7 @@ import { FollowPackFactory, packDeletion } from './factory';
 import { publishSigned } from '../../nostr/publish';
 import { requestEvents } from '../../nostr/requests';
 import type { FollowListEntry } from '../../types/follow-list';
+import { FOLLOW_LIST_KIND } from '../../nostr/protocol/kinds';
 
 export async function publishFollowList(name: string, coverImageUrl: string, entries: FollowListEntry[], id?: string, description?: string, expectedAuthor?: string) {
   await initializeSigner();
@@ -28,7 +29,7 @@ export async function deleteFollowList(eventId: string) {
   const account = accounts.active;
   if (!account) throw new Error('Sign in first');
   const runtime = await getNostrRuntime();
-  if (!runtime.eventStore.getEvent(eventId)) await requestEvents(runtime, { ids: [eventId], kinds: [39089] });
+  if (!runtime.eventStore.getEvent(eventId)) await requestEvents(runtime, { ids: [eventId], kinds: [FOLLOW_LIST_KIND] });
   const event = runtime.eventStore.getEvent(eventId);
   if (!event || event.pubkey !== account.pubkey) throw new Error('Only the author can delete this pack');
   const signed = await packDeletion(event).created(Math.max(Math.floor(Date.now() / 1000), event.created_at)).sign(account);

@@ -1,10 +1,10 @@
 import { ContactsFactory } from 'applesauce-common/factories';
-import type { NostrEvent } from 'applesauce-core/helpers';
+import { kinds, type NostrEvent } from 'applesauce-core/helpers';
 import type { ISigner } from 'applesauce-signers';
-import { requestEvents } from '../../nostr/requests';
+import { requestEventsStrict } from '../../nostr/requests';
 import { publishSigned } from '../../nostr/publish';
 import type { NostrRuntime } from '../../nostr/runtime';
-import { loadOutboxRelays } from '../../nostr/outboxes';
+import { discoverOutboxRelaysStrict } from '../../nostr/outboxes';
 
 type Identity = ISigner & { pubkey: string };
 const queues = new Map<string, Promise<unknown>>();
@@ -12,12 +12,12 @@ export function updateContacts(runtime: NostrRuntime, account: Identity, change:
   const prior = queues.get(account.pubkey) ?? Promise.resolve();
   const task = prior.catch(() => {}).then(async () => {
     if (!isActive()) throw new Error('Account changed; please retry');
-    const outboxes = await loadOutboxRelays(runtime, account.pubkey);
+    const outboxes = await discoverOutboxRelaysStrict(runtime, account.pubkey);
     const relays = [...runtime.relays, ...outboxes];
     // A failed refresh must never be interpreted as an absent contact list.
-    await requestEvents(runtime, { kinds: [3], authors: [account.pubkey] }, relays);
+    await requestEventsStrict(runtime, { kinds: [kinds.Contacts], authors: [account.pubkey] }, relays);
     if (!isActive()) throw new Error('Account changed; please retry');
-    const previous = runtime.eventStore.getReplaceable(3, account.pubkey);
+    const previous = runtime.eventStore.getReplaceable(kinds.Contacts, account.pubkey);
     let factory = previous ? ContactsFactory.modify(previous) : ContactsFactory.create();
     if (change.replace) {
       factory = factory.modifyPublicTags((tags) => tags.filter((tag) => tag[0] !== 'p'));

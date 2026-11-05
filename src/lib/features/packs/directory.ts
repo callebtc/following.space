@@ -1,5 +1,6 @@
 import { BehaviorSubject, combineLatest, Observable, Subscription, shareReplay, switchMap, takeUntil, startWith, catchError, of, distinctUntilChanged, map, merge, from, mergeMap, scan, retry } from 'rxjs';
 import type { SyncLoaderStatus } from 'applesauce-loaders/loaders';
+import { kinds } from 'applesauce-core/helpers';
 import type { NostrRuntime } from '../../nostr/runtime';
 import { accountRefreshFailed } from '../../nostr/account-refresh';
 import { FOLLOW_LIST_KIND } from '../../nostr/protocol/follow-pack';
@@ -13,7 +14,7 @@ export interface PackSyncTarget { relays: string[]; authors?: string[] }
 export function createPackDirectory(runtime: NostrRuntime, now = Math.floor(Date.now() / 1000), targets$?: Observable<PackSyncTarget[]>) {
   const window$ = new BehaviorSubject({ since: Math.max(0, now - 90 * DAY), until: now });
   const refresh$ = new BehaviorSubject(0);
-  const filters = [{ kinds: [FOLLOW_LIST_KIND] }, { kinds: [5], '#k': [String(FOLLOW_LIST_KIND)] }];
+  const filters = [{ kinds: [FOLLOW_LIST_KIND] }, { kinds: [kinds.EventDeletion], '#k': [String(FOLLOW_LIST_KIND)] }];
   const sources$: Observable<PackSyncTarget[]> = targets$ ?? runtime.relayPolicy.readRelays$.pipe(map((relays) => [{ relays }]));
   const state$ = new Observable<PackDirectoryState>((observer) => {
     const scope = new Subscription();

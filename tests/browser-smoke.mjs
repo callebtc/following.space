@@ -1,7 +1,7 @@
 // Run against `npm run build && npm run preview -- --port 5188` with `npm run test:browser`.
 // Uses generated keys, a simulated cache, and simulated relay traffic; no public writes.
 import { chromium } from 'playwright';
-import { finalizeEvent, matchFilters, nsecEncode, naddrEncode } from 'applesauce-core/helpers';
+import { finalizeEvent, matchFilters, nsecEncode, decodePointer } from 'applesauce-core/helpers';
 import { PrivateKeySigner } from 'applesauce-signers';
 import assert from 'node:assert/strict';
 const base = process.env.BASE_URL || 'http://127.0.0.1:5188';
@@ -60,7 +60,14 @@ try {
   await page.goto(base);
   await page.getByRole('heading', { name: 'Reactive Garden', exact: true }).waitFor();
   const card = page.getByRole('link').filter({ has: page.getByRole('heading', { name: 'Reactive Garden', exact: true }) });
-  assert.equal(await card.getAttribute('href'), `/d/${naddrEncode({ kind: 39089, pubkey, identifier: "browser-smoke" })}`);
+  const cardHref = await card.getAttribute('href');
+  assert.ok(cardHref?.startsWith('/d/'));
+  const pointer = decodePointer(cardHref.slice('/d/'.length));
+  assert.equal(pointer.type, 'naddr');
+  assert.equal(pointer.data.kind, 39089);
+  assert.equal(pointer.data.pubkey, pubkey);
+  assert.equal(pointer.data.identifier, 'browser-smoke');
+  assert.ok((pointer.data.relays ?? []).length <= 3);
   await card.click();
   await page.getByRole('heading', { name: 'Reactive Garden', exact: true }).waitFor();
   await page.goto(`${base}/d/browser-smoke?p=${pubkey}`);

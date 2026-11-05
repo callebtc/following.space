@@ -10,6 +10,8 @@ const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((stop) => stop()));
 function setup() {
   const runtime = createNostrRuntime({ cache: { read: async () => [], write: async () => {} }, relays: ['wss://relay.example'] });
+  // These identity tests do not exercise metadata discovery (covered in pack-outbox).
+  for (const key of [alice, bob]) runtime.eventStore.add(finalizeEvent({ kind: 10002, created_at: 1, content: '', tags: [] }, key));
   vi.spyOn(runtime.pool, 'request').mockReturnValue(of(signedPack(), signedPack({ key: bob })));
   vi.spyOn(runtime.pool, 'subscription').mockReturnValue(NEVER);
   stops.push(() => runtime.dispose()); return runtime;

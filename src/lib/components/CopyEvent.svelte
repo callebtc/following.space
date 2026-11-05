@@ -1,14 +1,14 @@
 <script lang="ts">
   import { packNaddr } from '$lib/nostr/protocol/pack-link';
-  import { APP_RELAYS } from '$lib/nostr/relay-policy';
   
   export let identifier: string;
   export let pubkey: string;
+  export let relays: string[] = [];
   
   let copied = false;
   
   async function copyEvent() {
-    const nostrLink = `nostr:${packNaddr({ id: identifier, pubkey }, APP_RELAYS)}`;
+    const nostrLink = `nostr:${packNaddr({ id: identifier, pubkey }, relays)}`;
 
     // Copy to clipboard using execCommand as fallback
     try {
@@ -54,4 +54,4 @@
   {:else}
     <span>Copy Pack Link</span>
   {/if}
-</button> 
+</button>

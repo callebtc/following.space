@@ -1,8 +1,8 @@
 import { packHref } from '../../nostr/protocol/pack-link';
 import { createHash } from 'node:crypto';
-import type { FollowList } from '../../nostr/protocol/follow-pack';
+import { FOLLOW_LIST_KIND, type FollowList } from '../../nostr/protocol/follow-pack';
 export function previewKey(pack: FollowList) {
-  return createHash('sha256').update(`v2:39089:${pack.pubkey}:${pack.id}:${pack.eventId}`).digest('hex');
+  return createHash('sha256').update(`v2:${FOLLOW_LIST_KIND}:${pack.pubkey}:${pack.id}:${pack.eventId}`).digest('hex');
 }
 export function escapeAttribute(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);

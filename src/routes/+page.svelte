@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { packHref } from '$lib/nostr/protocol/pack-link';
+  import { packHref, packRelayHints } from '$lib/nostr/protocol/pack-link';
   import { onMount } from 'svelte';
   import { user, user$ } from '$lib/stores/user';
   import { getNostrRuntime, peekNostrRuntime } from '$lib/nostr/runtime.client';
@@ -206,7 +206,7 @@
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {#each followLists as list (`${list.pubkey}:${list.id}`)}
           <a 
-            href={packHref(list)}
+            href={packHref(list, packRelayHints(runtime, list))}
             class="bg-surface rounded-lg shadow-sm overflow-hidden transition-transform hover:scale-[1.02]"
           >
             <!-- Cover image -->

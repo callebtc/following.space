@@ -1,6 +1,6 @@
 import { BehaviorSubject, Observable, Subscription, combineLatest, map, of, shareReplay } from 'rxjs';
 import { filterOptimalRelays, includeFallbackRelays, includeMailboxes } from 'applesauce-core';
-import { createOutboxMap, type NostrEvent } from 'applesauce-core/helpers';
+import { createOutboxMap, kinds, type NostrEvent } from 'applesauce-core/helpers';
 import { ignoreUnhealthyRelays, ignoreUnhealthyRelaysOnPointers } from 'applesauce-relay';
 import { createOutboxTimelineLoader } from 'applesauce-loaders/loaders';
 import type { NostrRuntime } from '../../nostr/runtime';
@@ -31,11 +31,11 @@ export function createPostTimeline(runtime: NostrRuntime, pubkeys: string[]) {
       map(createOutboxMap),
       shareReplay({ bufferSize: 1, refCount: true })
     );
-    const loader = createOutboxTimelineLoader(runtime.pool, outboxes$, { kinds: [1] }, {
+    const loader = createOutboxTimelineLoader(runtime.pool, outboxes$, { kinds: [kinds.ShortTextNote] }, {
       eventStore: runtime.eventStore, cache: runtime.cacheRequest, liveness: runtime.liveness,
       prefetch: 0, responseTimeout: 8000
     });
-    scope.add(combineLatest([runtime.eventStore.timeline({ kinds: [1], authors }), windows]).subscribe(([events, window]) => {
+    scope.add(combineLatest([runtime.eventStore.timeline({ kinds: [kinds.ShortTextNote], authors }), windows]).subscribe(([events, window]) => {
       update({ events: events.filter((event) => event.created_at >= window.since && !event.tags.some((tag) => tag[0] === 'e')).slice(0, limit) });
     }));
     scope.add(loader.status$.subscribe((statuses) => {
@@ -44,7 +44,7 @@ export function createPostTimeline(runtime: NostrRuntime, pubkeys: string[]) {
       update({ loading: statuses.some((s) => s.state === 'loading') });
     }));
     scope.add(loader(windows).subscribe({ error: () => { failed = true; update({ loading: false }); } }));
-    scope.add(runtime.pool.outboxSubscription(outboxes$, { kinds: [1], since: now - 60 }).subscribe({
+    scope.add(runtime.pool.outboxSubscription(outboxes$, { kinds: [kinds.ShortTextNote], since: now - 60 }).subscribe({
       next: (event) => runtime.eventStore.add(event), error: () => {}
     }));
     return () => scope.unsubscribe();

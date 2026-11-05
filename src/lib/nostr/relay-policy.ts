@@ -1,14 +1,8 @@
 import type { NostrEvent } from 'applesauce-core/helpers';
 import { BehaviorSubject, combineLatest, distinctUntilChanged, map, shareReplay } from 'rxjs';
 
-// Separate default discovery, metadata lookup, and signer relay roles.
-export const APP_RELAYS = [
-  'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io',
-  'wss://relay.ditto.pub', 'wss://relay.nostr.net',
-  'wss://nostr.wine', 'wss://nostr.mom', 'wss://theforest.nostr1.com'
-];
-export const LOOKUP_RELAYS = ['wss://purplepag.es', 'wss://relay.vertexlab.io'];
-export const SIGNER_RELAYS = ['wss://bucket.coracle.social', 'wss://relay.nsec.app'];
+// Compatibility exports for existing settings, login, and runtime consumers.
+export { APP_RELAYS, LOOKUP_RELAYS, SIGNER_RELAYS } from './relay-defaults';
 
 export function normalizeRelays(relays: string[]): string[] {
   return [...new Set(relays.flatMap((value) => {

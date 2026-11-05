@@ -1,4 +1,4 @@
-import type { NostrEvent } from 'applesauce-core/helpers';
+import { kinds, type NostrEvent } from 'applesauce-core/helpers';
 
 export interface FollowSnapshot {
   timestamp: number; eventId: string; count: number; pubkeys: string[]; event: NostrEvent;
@@ -16,7 +16,7 @@ export function readSnapshots(storage: StorageLike, pubkey: string): FollowSnaps
     const all = [...storedArray(storage, keyFor(pubkey)), ...storedArray(storage, LEGACY_KEY)] as FollowSnapshot[];
     const ids = new Set<string>();
     const snapshots = all.filter((snapshot) => {
-      if (snapshot?.event?.pubkey !== pubkey || snapshot.event.kind !== 3 || !Array.isArray(snapshot.pubkeys) ||
+      if (snapshot?.event?.pubkey !== pubkey || snapshot.event.kind !== kinds.Contacts || !Array.isArray(snapshot.pubkeys) ||
           !snapshot.pubkeys.every((p: unknown) => typeof p === 'string' && /^[0-9a-f]{64}$/i.test(p)) || ids.has(snapshot.eventId)) return false;
       ids.add(snapshot.eventId); return true;
     }).sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);

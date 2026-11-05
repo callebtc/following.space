@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { packHref } from '$lib/nostr/protocol/pack-link';
+  import { packHref, packRelayHints } from '$lib/nostr/protocol/pack-link';
   import { onMount, onDestroy } from 'svelte';
   import { requireAuth } from '$lib/services/auth';
   import { goto } from '$app/navigation';
@@ -261,7 +261,8 @@
           logDebug('Publish failed - no ID returned');
           return;
         }
-        goto(packHref({ id: dTag[1], pubkey: event.pubkey }));
+        const hints = packRelayHints(runtime ?? await getNostrRuntime(), { pubkey: event.pubkey, eventId: event.id });
+        goto(packHref({ id: dTag[1], pubkey: event.pubkey }, hints));
       } else {
         error = 'Failed to publish follow list. Please try again.';
         logDebug('Publish failed - no ID returned');

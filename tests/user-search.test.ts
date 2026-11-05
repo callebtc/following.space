@@ -1,14 +1,36 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createNostrRuntime } from '../src/lib/nostr/runtime';
-import { npubEncode } from 'applesauce-core/helpers';
+import { npubEncode, finalizeEvent } from 'applesauce-core/helpers';
+import { Subject } from 'rxjs';
+import { alice } from './fixtures';
 
 const mocks = vi.hoisted(() => ({ runtime: vi.fn(), request: vi.fn(), ranked: vi.fn() }));
 vi.mock('../src/lib/nostr/runtime.client', () => ({ getNostrRuntime: mocks.runtime }));
-vi.mock('../src/lib/nostr/requests', () => ({ requestEvents: mocks.request }));
+vi.mock('../src/lib/nostr/requests', async (original) => ({ ...await original<typeof import('../src/lib/nostr/requests')>(), requestEvents: mocks.request }));
 vi.mock('../src/lib/features/profiles/open-ranking', () => ({ searchRankedPubkeys: mocks.ranked }));
-import { searchUsersByName } from '../src/lib/features/profiles/user-search';
+import { searchUsersByName, observeUserSearch, type UserSearchState } from '../src/lib/features/profiles/user-search';
 const pubkey = 'a'.repeat(64);
 afterEach(() => vi.resetAllMocks());
+
+it('streams relay matches before EOSE and tears down an unfinished search', async () => {
+  const runtime = createNostrRuntime({ cache: { read: async () => [], write: async () => {} } });
+  mocks.runtime.mockResolvedValue(runtime);
+  const responses = new Subject<ReturnType<typeof finalizeEvent>>();
+  vi.spyOn(runtime.pool, 'request').mockReturnValue(responses);
+  const states: UserSearchState[] = [];
+  const sub = observeUserSearch('alice', 5, 'relay').subscribe((state) => states.push(state));
+  try {
+    await vi.waitFor(() => expect(responses.observed).toBe(true));
+    const profile = finalizeEvent({ kind: 0, created_at: 1, tags: [], content: JSON.stringify({ name: 'alice' }) }, alice);
+    responses.next(profile);
+    expect(states.at(-1)).toMatchObject({ loading: true, results: [{ pubkey: profile.pubkey }] });
+    sub.unsubscribe();
+    expect(responses.observed).toBe(false);
+    const count = states.length;
+    runtime.eventStore.add(finalizeEvent({ kind: 0, created_at: 2, tags: [], content: JSON.stringify({ name: 'alice updated' }) }, alice));
+    expect(states).toHaveLength(count);
+  } finally { sub.unsubscribe(); runtime.dispose(); }
+});
 
 it('keeps ranked users selectable when profile relays fail', async () => {
   const runtime = createNostrRuntime({ cache: { read: async () => [], write: async () => {} } });

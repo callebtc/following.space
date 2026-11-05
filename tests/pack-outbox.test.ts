@@ -28,6 +28,7 @@ function setup(cached: boolean, deleted = false) {
     return () => sub.unsubscribe();
   }));
   const request = vi.spyOn(runtime.pool, 'request').mockImplementation((relays, filters) => {
+    if (!Array.isArray(relays)) throw new Error('Expected finite request targets');
     const queries = (Array.isArray(filters) ? filters : [filters]) as Filter[];
     if (queries.some((query) => query.kinds?.includes(10002))) {
       // Fresh discovery must reach metadata lookup relays, not pretend the app relay has the list.
@@ -42,6 +43,29 @@ function setup(cached: boolean, deleted = false) {
 }
 
 describe('pack author outbox routing', () => {
+  it('refreshes old history when metadata arrives after the snapshot deadline', async () => {
+    vi.useFakeTimers();
+    const { runtime, pack, request } = setup(false);
+    request.mockImplementation((relays, filters) => {
+      if (!Array.isArray(relays)) throw new Error('Expected finite request targets');
+      const queries = (Array.isArray(filters) ? filters : [filters]) as Filter[];
+      if (queries.some((query) => query.kinds?.includes(10002))) return NEVER;
+      return relays.includes(OUTBOX) ? of(pack) : of();
+    });
+    const seen: (string | undefined)[] = [];
+    const sub = observePack(runtime, 'garden', pack.pubkey).subscribe((state) => seen.push(state.pack?.eventId));
+    await vi.advanceTimersByTimeAsync(2200);
+    expect(seen).not.toContain(pack.id);
+    runtime.eventStore.add(mailboxes());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toContain(pack.id);
+    sub.unsubscribe();
+    const count = request.mock.calls.length;
+    runtime.eventStore.add(mailboxes(2, 'wss://later.example/'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenCalledTimes(count);
+  });
+
   it.each([true, false])('loads an older pack only available at the author outbox (cached metadata: %s)', async (cached) => {
     const { runtime, pack, request } = setup(cached);
     expect((await loadPack(runtime, 'garden', pack.pubkey))?.eventId).toBe(pack.id);

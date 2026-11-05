@@ -7,7 +7,8 @@
   import { user } from '$lib/stores/user';
   import { publishFollowList, deleteFollowList } from '$lib/features/packs/commands';
   import { loadPack } from '$lib/features/packs/detail';
-  import { type UserSearchResult, searchUsersByName } from '$lib/features/profiles/user-search';
+  import { type UserSearchResult, observeUserSearch } from '$lib/features/profiles/user-search';
+  import { fromEvent, takeUntil } from 'rxjs';
   import type { FollowListEntry } from '$lib/types/follow-list';
   import PublicKeyDisplay from '$lib/components/PublicKeyDisplay.svelte';
   import ReactiveProfile from '$lib/components/ReactiveProfile.svelte';
@@ -160,18 +161,19 @@
   }
   
   // Handle user search
-  async function handleSearch() {
+  function handleSearch() {
     searchController?.abort();
     const controller = searchController = new AbortController();
     searching = true; error = ''; searchResults = []; duplicateEntryError = false; noSearchResults = false;
-    try {
-      const results = await searchUsersByName(searchQuery, 10, controller.signal, searchSource);
-      if (controller.signal.aborted) return;
-      searchResults = results.filter((result) => !selectedEntries.some((entry) => entry.pubkey === result.pubkey));
-      duplicateEntryError = results.length > 0 && searchResults.length === 0;
-      noSearchResults = results.length === 0;
-    } catch (err) { if (!controller.signal.aborted) error = err instanceof Error ? err.message : 'Search failed'; }
-    finally { if (!controller.signal.aborted) searching = false; }
+    observeUserSearch(searchQuery, 10, searchSource).pipe(takeUntil(fromEvent(controller.signal, 'abort'))).subscribe({
+      next: ({ results, loading }) => {
+        searching = loading;
+        searchResults = results.filter((result) => !selectedEntries.some((entry) => entry.pubkey === result.pubkey));
+        duplicateEntryError = !loading && results.length > 0 && searchResults.length === 0;
+        noSearchResults = !loading && results.length === 0;
+      },
+      error: (err) => { searching = false; error = err instanceof Error ? err.message : 'Search failed'; }
+    });
   }
 
   // Add a search result to the selected entries
@@ -496,7 +498,8 @@
               </div>
               <p class="mt-2 text-muted-foreground">Searching...</p>
             </div>
-          {:else if searchResults.length > 0}
+          {/if}
+          {#if searchResults.length > 0}
             <div class="bg-surface rounded-md shadow-sm mt-4">
               <ul class="divide-y divide-line">
                 {#each searchResults as result}
@@ -528,7 +531,7 @@
                 {/each}
               </ul>
             </div>
-          {:else if searchQuery.length >= 3 && noSearchResults}
+          {:else if !searching && searchQuery.length >= 3 && noSearchResults}
             <div class="bg-surface rounded-md shadow-sm mt-4 p-4 text-center text-muted-foreground">
               No users found matching "{searchQuery}"
             </div>

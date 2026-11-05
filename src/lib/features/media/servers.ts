@@ -1,6 +1,6 @@
 import { castUser } from 'applesauce-common/casts';
 import { kinds } from 'applesauce-core/helpers';
-import { firstValueFrom, filter, timeout } from 'rxjs';
+import { firstValueFrom, filter, timeout, map, concat, of } from 'rxjs';
 import type { NostrRuntime } from '../../nostr/runtime';
 import { publishSigned } from '../../nostr/publish';
 import { DEFAULT_BLOSSOM_SERVERS, normalizeBlossomServers } from './blossom';
@@ -10,20 +10,22 @@ export function observeBlossomServers(runtime: NostrRuntime, pubkey: string) {
   return castUser(pubkey, runtime.eventStore).blossomServers$;
 }
 
+/** Defaults are provisional: keep listening for a list discovered after the deadline. */
+export function observeResolvedBlossomServers(runtime: NostrRuntime, pubkey: string) {
+  const servers$ = observeBlossomServers(runtime, pubkey).pipe(
+    filter((value): value is URL[] => value !== undefined),
+    map((servers) => servers.map((server) => server.href))
+  );
+  return servers$.pipe(timeout({ first: 4000, with: () => {
+    if (runtime.eventStore.getReplaceable(kinds.BlossomServerList, pubkey)) throw new Error('Could not read your Blossom server list. Please retry.');
+    return concat(of([...DEFAULT_BLOSSOM_SERVERS]), servers$);
+  } }));
+}
+
 /** Resolve the account's BUD-03 list before considering application defaults. */
 export async function loadBlossomServers(runtime: NostrRuntime, pubkey: string): Promise<string[]> {
   await runtime.hydrate([{ kinds: [kinds.BlossomServerList], authors: [pubkey] }]).catch(() => {});
-  try {
-    const servers = await firstValueFrom(observeBlossomServers(runtime, pubkey).pipe(
-      filter((value): value is URL[] => value !== undefined),
-      timeout({ first: 4000 })
-    ));
-    // An explicitly empty list must not silently send media to other servers.
-    return servers.map((server) => server.href);
-  } catch {
-    if (runtime.eventStore.getReplaceable(kinds.BlossomServerList, pubkey)) throw new Error('Could not read your Blossom server list. Please retry.');
-    return [...DEFAULT_BLOSSOM_SERVERS];
-  }
+  return firstValueFrom(observeResolvedBlossomServers(runtime, pubkey));
 }
 
 export async function publishBlossomServers(runtime: NostrRuntime, pubkey: string, values: string[], signer: Signer, isCurrent: () => boolean) {

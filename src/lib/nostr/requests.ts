@@ -1,22 +1,25 @@
 import type { Filter, NostrEvent } from 'applesauce-core/helpers';
 import type { NostrRuntime } from './runtime';
-import { filter, firstValueFrom, forkJoin, take, tap, throwIfEmpty, timeout as bound } from 'rxjs';
+import { filter, firstValueFrom, forkJoin, take, tap, throwIfEmpty, timeout as bound, defer, toArray, race, fromEvent, mergeMap, throwError } from 'rxjs';
 import { normalizeRelays } from './relay-policy';
 
 /** Best-effort finite read: group completion can include failed or unfinished relays. */
 export function requestEvents(runtime: NostrRuntime, filters: Filter | Filter[], relays = runtime.relays, signal?: AbortSignal, timeout = 6000): Promise<NostrEvent[]> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new DOMException('Cancelled', 'AbortError'));
+  if (signal?.aborted) return Promise.reject(new DOMException('Cancelled', 'AbortError'));
+  const result$ = requestEvents$(runtime, filters, relays, timeout);
+  return firstValueFrom(signal ? race(result$, fromEvent(signal, 'abort').pipe(
+    mergeMap(() => throwError(() => new DOMException('Cancelled', 'AbortError')))
+  )) : result$);
+}
+
+/** Finite best-effort read; unsubscribing cancels the underlying request. */
+export function requestEvents$(runtime: NostrRuntime, filters: Filter | Filter[], relays = runtime.relays, timeout = 6000) {
+  return defer(() => {
     const targets = runtime.pool.filterRelays(relays);
-    if (!targets.length) return reject(new Error('No healthy relays are available. Please retry.'));
-    const events: NostrEvent[] = [];
-    const sub = runtime.pool.request(targets, filters, { timeout, firstResponseTimeout: timeout, waitForAuth: false }).subscribe({
-      next: (event) => { runtime.eventStore.add(event); events.push(event); },
-      error: (error) => { signal?.removeEventListener('abort', cancel); reject(error); },
-      complete: () => { signal?.removeEventListener('abort', cancel); resolve(events); }
-    });
-    function cancel() { sub.unsubscribe(); reject(new DOMException('Cancelled', 'AbortError')); }
-    if (!sub.closed) signal?.addEventListener('abort', cancel, { once: true });
+    if (!targets.length) throw new Error('No healthy relays are available. Please retry.');
+    return runtime.pool.request(targets, filters, { timeout, firstResponseTimeout: timeout, waitForAuth: false }).pipe(
+      tap((event) => runtime.eventStore.add(event)), toArray(), bound({ first: timeout })
+    );
   });
 }
 

@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PrivateKeyAccount } from 'applesauce-accounts/accounts';
 import { castUser } from 'applesauce-common/casts';
 import { finalizeEvent, type NostrEvent } from 'applesauce-core/helpers';
-import { concat, EMPTY, NEVER, Observable, of, throwError } from 'rxjs';
+import { concat, EMPTY, NEVER, Observable, of, throwError, firstValueFrom, timeout } from 'rxjs';
 import { createNostrRuntime } from '../src/lib/nostr/runtime';
 import { updateContacts } from '../src/lib/features/contacts/commands';
-import { loadOutboxRelays } from '../src/lib/nostr/outboxes';
+import { observeOutboxRelays } from '../src/lib/nostr/outboxes';
 import { alice, NOW } from './fixtures';
 
 type Message = NostrEvent | 'EOSE';
@@ -62,14 +62,14 @@ describe('strict contact discovery', () => {
       if (kind === 10002 && url === lookup) return delayed([metadata(), 'EOSE'], 2200);
       if (kind === 3) {
         reads.push(url);
-        return url === personal ? of(previous, 'EOSE') : of('EOSE');
+        return url === personal ? of(previous, 'EOSE' as const) : of('EOSE' as const);
       }
-      return of('EOSE');
+      return of('EOSE' as const);
     });
     const observed: string[][] = [];
     const cast = castUser(ctx.account.pubkey, ctx.runtime.eventStore).outboxes$.subscribe((value) => { if (value) observed.push(value); });
     cleanup.push(() => cast.unsubscribe());
-    const bestEffort = loadOutboxRelays(ctx.runtime, ctx.account.pubkey);
+    const bestEffort = firstValueFrom(observeOutboxRelays(ctx.runtime, ctx.account.pubkey).pipe(timeout({ first: 1500, with: () => of([]) })));
     const result = ctx.write();
     await vi.advanceTimersByTimeAsync(1501);
     expect(await bestEffort).toEqual([]);
@@ -97,7 +97,7 @@ describe('strict contact discovery', () => {
   });
 
   it('supports discovered metadata with no existing contact list', async () => {
-    const ctx = setup((_url, kind) => kind === 10002 ? of(metadata(), 'EOSE') : of('EOSE'));
+    const ctx = setup((_url, kind) => kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const));
     expect((await ctx.write()).tags).toContainEqual(['p', added]);
     expect(ctx.publish.mock.calls[0][0]).toContain(personal);
   });
@@ -106,7 +106,7 @@ describe('strict contact discovery', () => {
     const previous = contacts();
     const ctx = setup((url, kind) => {
       if (kind === failedKind && url === app) return throwError(() => new Error('offline'));
-      return kind === 10002 ? of(metadata(), 'EOSE') : of('EOSE');
+      return kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const);
     });
     ctx.runtime.eventStore.add(previous);
     await expect(ctx.write()).rejects.toThrow('offline');
@@ -121,7 +121,7 @@ describe('strict contact discovery', () => {
     const ctx = setup((url, kind) => {
       if (kind === silentKind && url === lookup && kind === 10002) return NEVER;
       if (kind === silentKind && url === personal && kind === 3) return concat(of(contacts()), NEVER);
-      return kind === 10002 ? of(metadata(), 'EOSE') : of('EOSE');
+      return kind === 10002 ? of(metadata(), 'EOSE' as const) : of('EOSE' as const);
     });
     const result = expect(ctx.write()).rejects.toThrow('Timeout');
     await vi.advanceTimersByTimeAsync(6001);

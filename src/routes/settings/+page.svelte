@@ -9,7 +9,7 @@
 
   import ServerFavicon from '$lib/components/ServerFavicon.svelte';
   import { DEFAULT_BLOSSOM_SERVERS, normalizeBlossomServers } from '$lib/features/media/blossom';
-  import { loadBlossomServers, observeBlossomServers, publishBlossomServers } from '$lib/features/media/servers';
+  import { observeResolvedBlossomServers, publishBlossomServers } from '$lib/features/media/servers';
   import { accounts } from '$lib/nostr/accounts';
   import { Subscription } from 'rxjs';
   let blossomServers: string[] = [];
@@ -29,18 +29,17 @@
   async function refreshMediaServers(pubkey: string) {
     blossomSubscription?.unsubscribe();
     blossomServers = []; newBlossomServer = ''; blossomMessage = ''; blossomError = ''; blossomLoading = true;
-    if (!pubkey) return;
+    if (!pubkey) { blossomLoading = false; return; }
     try {
       const runtime = await getNostrRuntime();
-      const servers = await loadBlossomServers(runtime, pubkey);
       if (destroyed || blossomAccount !== pubkey) return;
-      blossomServers = servers;
-      blossomSubscription = observeBlossomServers(runtime, pubkey).subscribe((value) => {
-        if (value !== undefined) blossomServers = value.map((server) => server.href);
+      blossomSubscription = observeResolvedBlossomServers(runtime, pubkey).subscribe({
+        next: (servers) => { blossomServers = servers; blossomLoading = false; },
+        error: (error) => { blossomError = error instanceof Error ? error.message : 'Could not load media servers.'; blossomLoading = false; }
       });
     } catch (error) {
-      if (blossomAccount === pubkey) blossomError = error instanceof Error ? error.message : 'Could not load media servers.';
-    } finally { if (blossomAccount === pubkey) blossomLoading = false; }
+      if (blossomAccount === pubkey) { blossomError = error instanceof Error ? error.message : 'Could not load media servers.'; blossomLoading = false; }
+    }
   }
   async function saveMediaServers(values: string[]) {
     if (blossomLoading || blossomSaving) return false;

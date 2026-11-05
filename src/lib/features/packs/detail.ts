@@ -1,10 +1,10 @@
 import { resolvePackLink } from '../../nostr/protocol/pack-link';
-import { eventRelays, normalizeRelays } from '../../nostr/relay-policy';
-import { Observable, Subscription, shareReplay, map, combineLatest, of, from, fromEvent, firstValueFrom, takeUntil, defaultIfEmpty } from 'rxjs';
-import { loadOutboxRelays } from '../../nostr/outboxes';
+import { normalizeRelays } from '../../nostr/relay-policy';
+import { Observable, Subscription, shareReplay, map, combineLatest, of, fromEvent, firstValueFrom, takeUntil, defaultIfEmpty, timeout, concat, distinctUntilChanged, switchMap, defer, catchError } from 'rxjs';
+import { observeOutboxRelays } from '../../nostr/outboxes';
 import { type FollowList, FOLLOW_LIST_KIND, parseFollowListEvent } from '../../nostr/protocol/follow-pack';
 import type { NostrRuntime } from '../../nostr/runtime';
-import { requestEvents } from '../../nostr/requests';
+import { requestEvents, requestEvents$ } from '../../nostr/requests';
 import { kinds, type Filter, type NostrEvent } from 'applesauce-core/helpers';
 
 export interface PackDetailState { pack: FollowList | null; candidates: FollowList[]; loading: boolean; error?: string }
@@ -26,7 +26,7 @@ async function refreshPack(runtime: NostrRuntime, query: ReturnType<typeof packQ
   const filters = [query.filter, query.deletes];
   await runtime.hydrate(filters).catch(() => {});
   signal?.throwIfAborted();
-  const discovery$ = query.pubkey ? from(loadOutboxRelays(runtime, query.pubkey)) : of([] as string[]);
+  const discovery$ = query.pubkey ? observeOutboxRelays(runtime, query.pubkey).pipe(timeout({ first: 1500, with: () => of([] as string[]) })) : of([] as string[]);
   const outboxes = await firstValueFrom(signal ? discovery$.pipe(takeUntil(fromEvent(signal, 'abort')), defaultIfEmpty([])) : discovery$);
   signal?.throwIfAborted();
   await requestEvents(runtime, filters, normalizeRelays([...runtime.relayPolicy.readRelays, ...query.relays, ...outboxes]), signal);
@@ -40,7 +40,6 @@ export function observePack(runtime: NostrRuntime, value: string, author?: strin
     }
     const { pubkey, relays, filter, deletes } = location;
     const scope = new Subscription();
-    const controller = new AbortController();
     let settled = false;
     let warning: string | undefined;
     let current: NostrEvent[] = [];
@@ -55,20 +54,29 @@ export function observePack(runtime: NostrRuntime, value: string, author?: strin
     // underlying database can briefly contain both revisions before old cleanup.
     scope.add(runtime.eventStore.timeline(filter).subscribe((events) => { current = events; emit(); }));
     const boundary = Math.floor(Date.now() / 1000) - 60;
-    const outboxes$ = pubkey ? runtime.eventStore.replaceable(kinds.RelayList, pubkey).pipe(map((event) => eventRelays(event, 'write'))) : of([] as string[]);
+    const discovery$ = pubkey ? observeOutboxRelays(runtime, pubkey) : of([] as string[]);
+    const outboxes$ = discovery$.pipe(timeout({ first: 1500, with: () => concat(of([] as string[]), discovery$) }));
     const targets$ = combineLatest([runtime.relayPolicy.readRelays$, outboxes$]).pipe(
-      map(([current, outboxes]) => normalizeRelays([...current, ...relays, ...outboxes]))
+      map(([current, outboxes]) => normalizeRelays([...current, ...relays, ...outboxes])),
+      distinctUntilChanged((a, b) => a.join('\n') === b.join('\n')),
+      shareReplay({ bufferSize: 1, refCount: true })
     );
     scope.add(runtime.pool.subscription(targets$, [filter, deletes].map((f) => ({ ...f, since: boundary }))).subscribe({
       next: (event) => runtime.eventStore.add(event), error: () => {}
     }));
-    void refreshPack(runtime, location, controller.signal).catch((error) => {
-      warning = error instanceof Error ? error.message : 'Pack could not be refreshed';
-    }).then(() => {
-      if (controller.signal.aborted) return;
-      settled = true; emit();
-    });
-    return () => { scope.unsubscribe(); controller.abort(); };
+    // Every routing change refreshes history too, including outboxes discovered late.
+    scope.add(targets$.pipe(switchMap((targets) => {
+      settled = false; warning = undefined;
+      return defer(() => runtime.hydrate([filter, deletes])).pipe(
+        catchError(() => of(undefined)),
+        switchMap(() => requestEvents$(runtime, [filter, deletes], targets)),
+        catchError((error) => {
+          warning = error instanceof Error ? error.message : 'Pack could not be refreshed';
+          return of([]);
+        })
+      );
+    })).subscribe(() => { settled = true; emit(); }));
+    return () => scope.unsubscribe();
   }).pipe(shareReplay({ bufferSize: 1, refCount: true }));
 }
 

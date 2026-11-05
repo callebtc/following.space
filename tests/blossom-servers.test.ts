@@ -4,7 +4,7 @@ vi.mock('applesauce-common/casts', () => ({ castUser: vi.fn() }));
 vi.mock('../src/lib/nostr/publish', () => ({ publishSigned: vi.fn() }));
 import { castUser } from 'applesauce-common/casts';
 import { publishSigned } from '../src/lib/nostr/publish';
-import { loadBlossomServers, publishBlossomServers } from '../src/lib/features/media/servers';
+import { loadBlossomServers, observeResolvedBlossomServers, publishBlossomServers } from '../src/lib/features/media/servers';
 import { DEFAULT_BLOSSOM_SERVERS } from '../src/lib/features/media/blossom';
 import type { NostrRuntime } from '../src/lib/nostr/runtime';
 const pubkey = 'a'.repeat(64);
@@ -15,6 +15,18 @@ function setup(value: URL[] | undefined, previous?: any) {
   return { runtime, servers };
 }
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
+it('keeps observing after default fallback and preserves a late explicit empty list', async () => {
+  vi.useFakeTimers();
+  const { runtime, servers } = setup(undefined);
+  const values: string[][] = [];
+  const sub = observeResolvedBlossomServers(runtime, pubkey).subscribe((value) => values.push(value));
+  await vi.advanceTimersByTimeAsync(4001);
+  expect(values).toEqual([DEFAULT_BLOSSOM_SERVERS]);
+  servers.next([]);
+  expect(values.at(-1)).toEqual([]);
+  sub.unsubscribe();
+  expect(servers.observed).toBe(false);
+});
 it('prefers the account cast list, preserving order and explicit empty lists', async () => {
   const { runtime, servers } = setup([new URL('https://personal.example'), new URL('https://backup.example')]);
   expect(await loadBlossomServers(runtime, pubkey)).toEqual(['https://personal.example/', 'https://backup.example/']);

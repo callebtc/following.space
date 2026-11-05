@@ -2,22 +2,25 @@ import { castUser } from 'applesauce-common/casts';
 import { kinds } from 'applesauce-core/helpers';
 import type { NostrRuntime } from './runtime';
 import { eventRelays } from './relay-policy';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, map, filter, distinctUntilChanged, timeout } from 'rxjs';
 import { requestEventsStrict } from './requests';
 
-/** Bound metadata discovery; cached lists resolve immediately. */
-export async function loadOutboxRelays(runtime: NostrRuntime, pubkey: string) {
-  const cached = runtime.eventStore.getReplaceable(kinds.RelayList, pubkey);
-  if (cached) return eventRelays(cached, 'write');
-  const hints = await castUser(pubkey, runtime.eventStore).outboxes$.$first(1500, [] as string[]);
-  // Use the signed list once discovered. Its URL parser also handles valid long TLDs rejected by SDK hint parsing.
-  const discovered = runtime.eventStore.getReplaceable(kinds.RelayList, pubkey);
-  return discovered ? eventRelays(discovered, 'write') : hints;
+/** Cast-driven discovery stays subscribed for late metadata and subsequent changes. */
+export function observeOutboxRelays(runtime: NostrRuntime, pubkey: string) {
+  return castUser(pubkey, runtime.eventStore).outboxes$.pipe(
+    // Preserve valid long TLDs rejected by the SDK hint parser.
+    map((hints) => {
+      const event = runtime.eventStore.getReplaceable(kinds.RelayList, pubkey);
+      return event ? eventRelays(event, 'write') : hints;
+    }),
+    filter((value): value is string[] => value !== undefined),
+    distinctUntilChanged((a, b) => a.join('\n') === b.join('\n'))
+  );
 }
 
 /** Contact writes must distinguish absent metadata from a failed or unfinished lookup. */
 export async function discoverOutboxRelaysStrict(runtime: NostrRuntime, pubkey: string) {
-  const lookup = await firstValueFrom(runtime.relayPolicy.lookupRelays$);
+  const lookup = await firstValueFrom(runtime.relayPolicy.lookupRelays$.pipe(timeout({ first: 6000 })));
   const cached = runtime.eventStore.getReplaceable(kinds.RelayList, pubkey);
   await requestEventsStrict(runtime, { kinds: [kinds.RelayList], authors: [pubkey] }, [
     ...lookup, ...runtime.relayPolicy.readRelays, ...eventRelays(cached, 'write')
